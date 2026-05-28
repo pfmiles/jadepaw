@@ -7,7 +7,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Project Foundation** — Workspace scaffold, crate structure, build system, CI
+- [x] **Phase 1: Project Foundation** — Workspace scaffold, crate structure, build system, CI (completed 2026-05-28)
 - [ ] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation
 - [ ] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards
 - [ ] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools
@@ -33,11 +33,11 @@
   4. `cargo clippy --workspace -- -D warnings` passes with zero warnings
   5. CI pipeline (fmt + build + test + clippy) runs on every push and completes in under 5 minutes
 
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 
-- [ ] 01-01-PLAN.md — Workspace scaffold: root Cargo.toml with workspace.dependencies, all 7 crates with Cargo.toml and lib.rs docs, workspace smoke test, project config files (rustfmt, clippy, deny, editorconfig, gitattributes, gitignore)
-- [ ] 01-02-PLAN.md — CI pipeline (GitHub Actions gate + matrix + security audit), justfile task runner, pre-commit hook, nextest configuration
+- [x] 01-01-PLAN.md — Workspace scaffold: root Cargo.toml with workspace.dependencies, all 7 crates with Cargo.toml and lib.rs docs, workspace smoke test, project config files (rustfmt, clippy, deny, editorconfig, gitattributes, gitignore)
+- [x] 01-02-PLAN.md — CI pipeline (GitHub Actions gate + matrix + security audit), justfile task runner, pre-commit hook, nextest configuration
 
 ### Phase 2: Wasm Isolation Core
 
@@ -170,7 +170,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Project Foundation | 0/? | Not started | — |
+| 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 0/? | Not started | — |
 | 3. Agent Runtime | 0/? | Not started | — |
 | 4. Tool System | 0/? | Not started | — |
