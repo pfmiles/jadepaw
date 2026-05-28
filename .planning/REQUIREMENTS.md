@@ -106,28 +106,28 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AGENT-01 | — | Pending |
-| AGENT-02 | — | Pending |
-| AGENT-03 | — | Pending |
-| AGENT-04 | — | Pending |
-| MEM-01 | — | Pending |
-| MEM-02 | — | Pending |
-| SKILL-01 | — | Pending |
-| SKILL-02 | — | Pending |
-| SEC-01 | — | Pending |
-| SEC-02 | — | Pending |
-| SEC-03 | — | Pending |
-| SEC-04 | — | Pending |
-| UI-01 | — | Pending |
-| UI-02 | — | Pending |
-| OBS-01 | — | Pending |
-| OBS-02 | — | Pending |
+| AGENT-01 | Phase 3: Agent Runtime | Pending |
+| AGENT-02 | Phase 4: Tool System | Pending |
+| AGENT-03 | Phase 3: Agent Runtime | Pending |
+| AGENT-04 | Phase 3: Agent Runtime | Pending |
+| MEM-01 | Phase 5: Session Memory | Pending |
+| MEM-02 | Phase 5: Session Memory | Pending |
+| SKILL-01 | Phase 6: Skill System | Pending |
+| SKILL-02 | Phase 6: Skill System | Pending |
+| SEC-01 | Phase 2: Wasm Isolation Core | Pending |
+| SEC-02 | Phase 2: Wasm Isolation Core | Pending |
+| SEC-03 | Phase 2: Wasm Isolation Core | Pending |
+| SEC-04 | Phase 2: Wasm Isolation Core | Pending |
+| UI-01 | Phase 7: Web Chat UI | Pending |
+| UI-02 | Phase 8: Skill Management UI | Pending |
+| OBS-01 | Phase 9: Observability | Pending |
+| OBS-02 | Phase 9: Observability | Pending |
 
 **Coverage:**
 - v1 requirements: 16 total
-- Mapped to phases: 0
-- Unmapped: 16 ⚠️
+- Mapped to phases: 16 / 16
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-05-28*
-*Last updated: 2026-05-28 after research synthesis*
+*Last updated: 2026-05-28 after roadmap creation*
