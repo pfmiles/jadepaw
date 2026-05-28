@@ -1,0 +1,47 @@
+graph TB
+    subgraph 流量接入层
+        Gateway["Nginx/Envoy HTTP/WS 网关"]
+    end
+
+    subgraph 宿主进程_Rust ["宿主进程 (Rust)"]
+        Scheduler["宿主调度器"]
+        WasmRuntime["Wasm 运行时 (wasmtime)"]
+        Capabilities["宿主能力层"]
+        JIT["固化引擎 (JIT Harness)"]
+
+        Scheduler -->|分配/回收| WasmRuntime
+        Scheduler -->|注入配置| Capabilities
+        WasmRuntime -->|宿主函数调用| Capabilities
+        Capabilities -->|记录轨迹| JIT
+        JIT -->|热替换模块| WasmRuntime
+    end
+
+    subgraph Wasm实例池 ["预初始化 Wasm 实例池"]
+        Instance1["实例 A (线性内存)"]
+        Instance2["实例 B (线性内存)"]
+        InstanceN["……"]
+    end
+
+    Gateway -->|请求转发表| Scheduler
+    Scheduler -->|分配实例| WasmRuntime
+    WasmRuntime -->|嵌入| Instance1
+    WasmRuntime -->|嵌入| Instance2
+    WasmRuntime -->|嵌入| InstanceN
+
+    subgraph 持久化层
+        Redis[Redis 缓存]
+        ObjectStore[对象存储]
+        AuditLog[审计日志]
+    end
+
+    Capabilities -->|读写| Redis
+    Capabilities -->|存储| ObjectStore
+    Capabilities -->|写入| AuditLog
+
+    subgraph 外部服务
+        LLM["LLM API (OpenAI/Claude)"]
+        Tools["命令行工具 (cat/python3/...)"]
+    end
+
+    Capabilities -->|网络请求| LLM
+    Capabilities -->|受限执行| Tools
