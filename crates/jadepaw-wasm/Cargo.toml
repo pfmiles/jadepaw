@@ -1,0 +1,20 @@
+[package]
+name = "jadepaw-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jadepaw-core = { path = "../jadepaw-core" }
+wasmtime = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+default = ["single-node"]
+single-node = []
+cluster = ["redis"]
+redis = ["dep:redis"]
+
+[dependencies.redis]
+workspace = true
+optional = true

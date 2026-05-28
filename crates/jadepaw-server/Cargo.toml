@@ -1,0 +1,20 @@
+[package]
+name = "jadepaw-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jadepaw-core = { path = "../jadepaw-core" }
+jadepaw-wasm = { path = "../jadepaw-wasm" }
+jadepaw-bus = { path = "../jadepaw-bus" }
+jadepaw-agent = { path = "../jadepaw-agent" }
+jadepaw-skill = { path = "../jadepaw-skill" }
+jadepaw-gateway = { path = "../jadepaw-gateway" }
+axum = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = ["single-node"]
+single-node = []
+cluster = []
