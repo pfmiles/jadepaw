@@ -1,0 +1,24 @@
+#!/bin/sh
+# Pre-commit hook for jadepaw
+# Runs cargo fmt and cargo clippy checks before each commit.
+# Zero external dependencies — uses only cargo and rustup.
+
+echo "==> Running pre-commit checks..."
+
+# Check formatting
+cargo fmt --all -- --check
+fmt_exit=$?
+if [ $fmt_exit -ne 0 ]; then
+    echo "Formatting check failed. Run 'just fmt' to fix."
+    exit $fmt_exit
+fi
+
+# Check clippy warnings
+cargo clippy --all-targets -- -D warnings
+clippy_exit=$?
+if [ $clippy_exit -ne 0 ]; then
+    echo "Clippy found warnings. Run 'just lint' to see details."
+    exit $clippy_exit
+fi
+
+echo "==> Pre-commit checks passed."
