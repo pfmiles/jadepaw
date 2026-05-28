@@ -1,0 +1,44 @@
+# cargo-deny configuration (D-19)
+# Run: cargo deny check
+
+[licenses]
+# License allow-list: Apache-2.0, MIT, ISC, BSD-2-Clause, BSD-3-Clause, Unicode-3.0, Zlib
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+# Ban openssl/openssl-sys in favor of rustls (T-01-01)
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+]
+# Deny multiple versions of the same crate
+multiple-versions = "deny"
+# Deny wildcard (unpinned) dependency versions
+wildcards = "deny"
+highlight = "all"
+
+[advisories]
+# Deny known vulnerabilities (RustSec)
+vulnerability = "deny"
+# Warn on unmaintained crates
+unmaintained = "warn"
+# Deny yanked crate versions
+yanked = "deny"
+ignore = []
+
+[sources]
+# Deny unknown registries
+unknown-registry = "deny"
+# Deny unverified git dependencies
+unknown-git = "deny"
+allow-git = []

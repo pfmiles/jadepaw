@@ -1,0 +1,13 @@
+# Git line-ending normalization (D-18)
+* text=auto
+
+# Source files: always LF
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+
+# Build artifacts: exclude from archives
+target/ export-ignore

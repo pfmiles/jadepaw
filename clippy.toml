@@ -1,0 +1,33 @@
+# Clippy configuration (D-15)
+#
+# Lint level configuration (pedantic + targeted allows) is set via CLI flags in CI:
+#   cargo clippy --workspace --all-targets --all-features -- -D warnings \
+#     -W clippy::pedantic \
+#     -A clippy::similar_names \
+#     -A clippy::module_name_repetitions \
+#     -A clippy::cast_precision_loss \
+#     -A clippy::unreadable_literal
+#
+# This file sets clippy-internal configuration values only.
+
+allow-doc-keyword-errors = false
+
+doc-valid-idents = [
+    "WebAssembly",
+    "Wasm",
+    "WASI",
+    "LLM",
+    "HTMX",
+    "SQLx",
+    "OTLP",
+    "ReAct",
+    "JSONB",
+    "SSRF",
+    "JWT",
+    "API",
+    "SDK",
+    "CLI",
+    "DAG",
+    "CRUD",
+    "MCP",
+]
