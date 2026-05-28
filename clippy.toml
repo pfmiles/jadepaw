@@ -10,8 +10,6 @@
 #
 # This file sets clippy-internal configuration values only.
 
-allow-doc-keyword-errors = false
-
 doc-valid-idents = [
     "WebAssembly",
     "Wasm",

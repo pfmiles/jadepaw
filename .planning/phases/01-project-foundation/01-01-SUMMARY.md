@@ -51,14 +51,14 @@ key-files:
     - crates/jadepaw-skill/Cargo.toml + src/lib.rs
     - crates/jadepaw-gateway/Cargo.toml + src/lib.rs
     - crates/jadepaw-server/Cargo.toml + src/main.rs + src/lib.rs + static/.gitkeep
-    - tests/workspace_smoke.rs
+    - crates/jadepaw-server/tests/workspace_smoke.rs
     - rustfmt.toml
     - clippy.toml
     - deny.toml
     - .editorconfig
     - .gitattributes
+  modified:
     - .gitignore
-  modified: []
 
 key-decisions:
   - "Root workspace is a virtual manifest — no [package] or [features] section; per-crate features defined in each crate's Cargo.toml"
@@ -86,7 +86,7 @@ completed: 2026-05-29
 
 ## Performance
 
-- **Duration:** ~45 min (estimated, across 3 tasks over 2 execution attempts)
+- **Duration:** ~60 min (across 3 tasks over 2 execution attempts)
 - **Tasks:** 3
 - **Files created:** 24
 - **Crates:** 7 (6 library + 1 binary)
@@ -108,7 +108,8 @@ Each task was committed atomically:
 1. **Task 1: Root workspace Cargo.toml** - `45a2ebf` (feat: create root workspace Cargo.toml with workspace.dependencies)
 2. **Task 2: All 7 crates** - `cbf220c` (feat: create all 7 crates with Cargo.toml, lib.rs docs, and dependency graph)
 3. **Task 2 fix: Remove root [package] and stray src/lib.rs** - `61efd63` (fix: remove erroneous [package] section and stray src/lib.rs from root workspace)
-4. **Task 3: Config files + smoke test** - PENDING (needs `cargo build --workspace` verification before commit)
+4. **Task 3: Config files + smoke test** - `aee3b3d` (feat: add workspace smoke test and project config files)
+5. **Task 3 corrections: Fix clippy/rustfmt issues** - PENDING (fix: resolve clippy.toml invalid option, rustfmt unstable options, and smoke test location)
 
 ## Files Created/Modified
 
@@ -125,10 +126,10 @@ Each task was committed atomically:
 - `crates/jadepaw-server/Cargo.toml` + `crates/jadepaw-server/src/main.rs` + `crates/jadepaw-server/src/lib.rs` + `crates/jadepaw-server/static/.gitkeep` - Binary crate with compile_error! guard
 - `Cargo.lock` - Generated lock file
 
-### Task 3 (pending commit)
-- `tests/workspace_smoke.rs` - Imports all 6 library crates for linkage verification (D-21)
-- `rustfmt.toml` - style_edition = "2024", group_imports, max_width = 100 (D-14)
-- `clippy.toml` - allow-doc-keyword-errors, doc-valid-idents (D-15)
+### Task 3 (committed: aee3b3d + correction pending)
+- `crates/jadepaw-server/tests/workspace_smoke.rs` - Imports all 6 library crates for linkage verification (D-21). Moved from `tests/` to server crate because root is a virtual manifest and tests/ at root are not compiled by Cargo.
+- `rustfmt.toml` - style_edition = "2024", max_width = 100. Unstable options (group_imports, imports_granularity) removed due to nightly-only requirement.
+- `clippy.toml` - doc-valid-idents list only. Removed invalid `allow-doc-keyword-errors` (not a recognized clippy config option in current stable).
 - `deny.toml` - License allow-list, openssl ban, advisory+yanked checks (D-19)
 - `.editorconfig` - Cross-editor indentation/encoding config (D-18)
 - `.gitattributes` - Line-ending normalization, export-ignore (D-18)
@@ -157,16 +158,36 @@ Each task was committed atomically:
 - **Fix:** Skill crate left without [features] section — its behavior doesn't change between single-node and cluster
 - **Verification:** cargo metadata shows skill has empty features, which is correct
 
+**3. [Smoke test location] Virtual manifest cannot host tests/**
+- **Found during:** Task 3 verification (cargo test)
+- **Issue:** `tests/workspace_smoke.rs` at repo root is not compiled because the workspace is a virtual manifest. Cargo only compiles tests/ for actual packages.
+- **Fix:** Moved smoke test to `crates/jadepaw-server/tests/workspace_smoke.rs`. Server depends on all 6 library crates, so it's the correct location.
+- **Verification:** `cargo test --workspace` reports 1 test passed (all_library_crates_importable)
+
+**4. [Clippy/rustfmt fixes] Several issues during verification**
+- **Found during:** Task 3 clippy and fmt verification
+- **Issues and fixes:**
+  - `allow-doc-keyword-errors` is not a valid clippy config option -- removed from clippy.toml
+  - `group_imports` and `imports_granularity` are nightly-only rustfmt features -- removed from rustfmt.toml
+  - Unused imports in smoke test (empty crates) -- added `#[allow(unused_imports)]` to each import
+  - `assert!(true)` flagged as constant assertion -- removed assertion, test is about compilation linkage
+  - `--all-features` triggers compile_error! in jadepaw-server (single-node + cluster mutually exclusive) -- clippy run without `--all-features`
+- **Verification:** `cargo build --workspace` (rc=0), `cargo test --workspace` (rc=0), `cargo clippy --workspace --all-targets -- -D warnings` (rc=0), `cargo fmt --all -- --check` (rc=0)
+
 ---
 
-**Total deviations:** 2 auto-fixed (1 virtual manifest constraint, 1 crate-specific decision)
-**Impact on plan:** Both necessary for correctness. No scope creep.
+**Total deviations:** 4 auto-fixed (1 virtual manifest constraint, 1 crate-specific decision, 1 test location, 1 clippy/rustfmt corrections)
+**Impact on plan:** All necessary for correctness and stable-toolchain compatibility. No scope creep.
 
 ## Issues Encountered
 
 - **Version drift from STACK.md:** Original STACK.md listed wasmtime 38.0, redis 0.28, async-openai 0.34. RESEARCH.md identified wasmtime 45.0, redis 1.2, async-openai 0.40 as current crates.io versions. Phase 1 uses RESEARCH.md versions.
 - **serde_yaml deprecation:** serde_yaml was deprecated by maintainer dtolnay in March 2024. Not included in workspace.dependencies — deferred to Phase 6.
 - **Root [features] rejection by Cargo:** Virtual workspace manifests cannot define `[features]`. The plan's hybrid feature strategy was adjusted to rely solely on per-crate features.
+- **Smoke test at root not compiled:** `tests/` at repo root is ignored by Cargo when the workspace is a virtual manifest. Moved to `crates/jadepaw-server/tests/`.
+- **rustfmt nightly-only features:** `group_imports` and `imports_granularity` require nightly rustfmt. Removed from config.
+- **clippy.toml invalid option:** `allow-doc-keyword-errors` is not a recognized clippy config option. Removed.
+- **--all-features conflicts with compile_error! guard:** Both `single-node` and `cluster` features cannot be enabled simultaneously per D-04. clippy/tests run with default features only.
 
 ## User Setup Required
 

@@ -1,5 +1,7 @@
 # Rustfmt configuration (D-14)
 style_edition = "2024"
-group_imports = "StdExternalCrate"
-imports_granularity = "Crate"
 max_width = 100
+
+# NOTE: group_imports and imports_granularity are unstable (nightly-only)
+# and have been removed. Enable them when the project adopts nightly rustfmt
+# or when they stabilize on stable Rust.
