@@ -1,10 +1,6 @@
-[package]
-name = "jadepaw"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0 OR MIT"
-repository = "https://github.com/user/jadepaw"
-rust-version = "1.85"
+# Root workspace manifest for jadepaw
+# This file defines workspace-wide settings, dependencies, and features.
+# Individual crates live in crates/ — see crates/*/Cargo.toml for per-crate config.
 
 [workspace]
 members = ["crates/*"]
