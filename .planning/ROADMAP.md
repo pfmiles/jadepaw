@@ -30,7 +30,11 @@
   3. `cargo test --workspace` passes with no failures
   4. `cargo clippy --workspace -- -D warnings` passes with zero warnings
   5. CI pipeline (fmt + build + test + clippy) runs on every push and completes in under 5 minutes
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Workspace scaffold: root Cargo.toml with workspace.dependencies, all 7 crates with Cargo.toml and lib.rs docs, workspace smoke test, project config files (rustfmt, clippy, deny, editorconfig, gitattributes, gitignore)
+- [ ] 01-02-PLAN.md — CI pipeline (GitHub Actions gate + matrix + security audit), justfile task runner, pre-commit hook, nextest configuration
 
 ### Phase 2: Wasm Isolation Core
 **Goal:** Every agent session runs in an isolated wasmtime Store with strict resource limits, and tool execution is mediated through a capability whitelist with sandboxed file access.
