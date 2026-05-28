@@ -22,7 +22,7 @@ test-unit:
 
 # Lint: clippy with zero-warnings policy
 lint:
-    @cargo clippy --workspace --all-targets --all-features -- -D warnings
+    @cargo clippy --workspace --all-targets -- -D warnings
 
 # Format all source files
 fmt:

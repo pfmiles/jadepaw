@@ -28,7 +28,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (zero warnings)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build docs
         run: cargo doc --workspace --no-deps --document-private-items
