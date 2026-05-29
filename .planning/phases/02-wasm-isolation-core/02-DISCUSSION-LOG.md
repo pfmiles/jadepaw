@@ -9,16 +9,17 @@
 
 ---
 
-## Guest-Host Interface
+## Guest-Host Communication Interface
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Trait-based contract + func_wrap | Rust trait in jadepaw-core defines canonical interface. jadepaw-wasm implements with func_wrap_async on core wasm modules. Full async, no WIT toolchain, migratable to WIT later. | ✓ |
-| Full WIT Component Model | WIT files define the world. bindgen! generates host trait + guest stubs. Cross-language interop built in. | |
-| Plain func_wrap (no abstraction) | Direct wasmtime Linker::func_wrap_async calls. Zero abstraction. Fastest to implement. | |
+| Trait contract + func_wrap_async | Rust trait in jadepaw-core defines canonical interface. jadepaw-wasm implements with func_wrap_async on core wasm modules. Full async, no WIT toolchain, PoolingAllocator compatible, migratable to WIT later. | ✓ |
+| WIT Component Model | WIT files define the world. bindgen! generates host trait + guest stubs. Cross-language interop. But Component Model is W3C Phase 1, async API immature. | |
+| Plain func_wrap (no abstraction) | Direct wasmtime Linker::func_wrap_async calls. Zero abstraction. Fastest to implement but no type-level contract. | |
+| Hybrid: Trait + WIT compatibility layer | Trait contract today + optional WIT shim later. Two interface definitions to maintain. | |
 
-**User's choice:** Trait-based contract + func_wrap (Recommended)
-**Notes:** WIT/component model rejected for Phase 2 due to async immaturity. Trait serves as versioned interface contract without buying into the full component model stack. Migration path to WIT remains open if cross-language guests become a requirement.
+**User's choice:** Trait contract + func_wrap_async (Recommended)
+**Notes:** Component Model rejected due to Phase 1 W3C status — async semantics still in active design, FutureReader requires manual lifecycle management, Rust async API nascent. Trait-based approach preserves full async support and PoolingAllocator compatibility. Migration path to WIT remains open when Component Model reaches Phase 3-4.
 
 ---
 
@@ -27,24 +28,27 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Lazy instantiate + benchmark first | Pre-compile Module + InstancePre only. Acquire = Store::new + instantiate_async. Drop Store on release. Benchmark before optimizing. | ✓ |
-| Pre-warmed Store pool from Day 1 | Pre-create N (Store, Instance) pairs at startup. Acquire = dequeue + inject session state. Release = guest _reset() + return to pool. | |
-| Store sub-pool (partial pre-warm) | Pre-create Stores only. Acquire = dequeue Store + instantiate. Middle ground between lazy and full pre-warm. | |
+| Pre-warmed (Store, Instance) hot pool | Pre-create N pairs at startup. Dequeue + inject session state. Requires guest reset contract. | |
+| Store sub-pool | Pre-create Stores only. instantiate_async on acquire. Eliminates Store allocation but still pays instantiation cost. | |
+| Two-tier pool | Hot pre-instantiated + cold InstancePre fallback. Best for sustained baseline + burst spikes. | |
 
 **User's choice:** Lazy instantiate + benchmark first (Recommended)
-**Notes:** Key constraint from wasmtime: Instance cannot outlive its Store, so pooling operates at Store granularity. Pooling allocator pre-allocates memory slots — lazy creation may already hit 5ms P99. Pre-warmed pool is an optimization to apply only if benchmarks prove it necessary.
+**Notes:** PoolingAllocator pre-allocates memory slots at Engine creation, so Store::new is essentially slot assignment. InstancePre.instantiate_async benefits from warm slot affinity (max_unused_warm_slots=100). If profiling shows >3ms P99, Store Sub-pool is the natural first optimization before full hot pool.
 
 ---
 
-## ResourceLimiter & Termination
+## ResourceLimiter & Termination Strategy
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Custom monolithic ResourceLimiter | Single struct with per-instance caps + Arc<TenantQuota> for aggregate accounting. Ok(false) on tenant budget exceeded, Err() on 64MB hard cap. | ✓ |
-| Built-in StoreLimits only | wasmtime StoreLimitsBuilder. No custom impl. Tenant quotas tracked externally. | |
-| Delegating chain | TenantQuotaLimiter wraps InstanceHardLimiter. Composable, independently testable. | |
+| Delegating chain | InstanceHardLimiter (64MB → Err() trap) + TenantQuotaLimiter wraps it (aggregate budget → Ok(false)). Independently testable, extensible for future phases. | ✓ |
+| Custom monolithic ResourceLimiter | Single struct with per-instance caps + Arc<TenantQuota>. Simple but couples security and business boundaries. | |
+| StoreLimitsBuilder only | Built-in StoreLimitsBuilder for hard caps. Tenant quotas tracked externally via background polling. Zero custom code but eventual consistency. | |
+| Layered with graceful recovery | Three-tier: allow → deny-soft (Ok(false)) → deny-hard (Err() after N denials). Guest gets recovery window but most complex design. | |
+| External resource monitor | Separate tokio task polls metrics, signals termination via channel. Reactive not preventive, racy under burst allocation. | |
 
-**User's choice:** Custom monolithic ResourceLimiter (Recommended)
-**Notes:** Tiered semantics: tenant budget exceeded → Ok(false) (guest receives -1, recoverable); 64MB hard cap → Err() (trap, security boundary). Fuel + Epoch enabled at Engine level from Day 1, driven by background epoch-tick thread.
+**User's choice:** Delegating chain (Recommended)
+**Notes:** User explicitly chose this over monolithic after deep comparison. Key rationale: (1) InstanceHardLimiter can be audited in isolation for the security-critical "never exceed 64MB" invariant, (2) extensible — Phase 4 adds ToolRateLimiter, cluster mode swaps TenantQuotaLimiter for DistributedTenantQuotaLimiter without touching security boundary, (3) wasmtime's three-tier memory_growing semantics (Ok(true)/Ok(false)/Err()) naturally suggest layered design. Monolithic's simplicity advantage was deemed not worth the long-term coupling cost when security and business boundaries are fundamentally different concerns.
 
 ---
 
@@ -53,11 +57,12 @@
 | Option | Description | Selected |
 |--------|-------------|----------|
 | Check methods on SessionState | InstanceCapabilities struct in jadepaw-core. can_read_file, can_call_tool, can_access_domain methods on SessionState. Host functions call caller.data().can_*() at entry. | ✓ |
-| bitflags gate + pattern list | Coarse O(1) bitflag gate at entry + PathPattern/DomainPattern list for fine-grained checks. Two-tier enforcement. | |
-| Enforcement macro | check_capability! macro enforces uniformly. Centralized audit logging. Prevents "forgot to check" bugs. | |
+| Check methods + enforcement macro | check_capability! macro enforces uniformly. Centralized audit logging. Prevents "forgot to check" bugs. | |
+| Two-tier: bitflags + pattern list | O(1) bitflag gate at entry + PathPattern/DomainPattern list for fine-grained checks. Two-tier enforcement. | |
+| Typestate capability tokens | ZST tokens for compile-time enforcement. Architecturally elegant but fights wasmtime's func_wrap API. | |
 
 **User's choice:** Check methods on SessionState (Recommended)
-**Notes:** InstanceCapabilities in jadepaw-core (shared type). Enforcement methods in jadepaw-wasm on SessionState. Host functions call can_*() at the earliest possible point before side effects. Refactorable to macro or bitflag approach if host function count grows beyond ~10.
+**Notes:** Right starting point for Phase 2's 5-10 host functions. Capability methods live in a dedicated `capability` module so migration to enforcement macro is a one-session refactor when Phase 4 host function count exceeds ~20. Integration test will verify every registered host function accesses caller.data() at entry. Typestate tokens rejected — runtime indirection needed to extract tokens from caller.data() defeats the compile-time guarantee.
 
 ---
 
