@@ -1,6 +1,6 @@
 ---
 phase: 02-wasm-isolation-core
-reviewed: 2026-05-30T19:00:00Z
+reviewed: 2026-05-30T22:00:00Z
 depth: standard
 files_reviewed: 32
 files_reviewed_list:
@@ -37,105 +37,125 @@ files_reviewed_list:
   - crates/jadepaw-wasm/tests/pool.rs
   - crates/jadepaw-wasm/tests/stress_concurrent.rs
 findings:
-  critical: 5
-  warning: 0
-  info: 2
-  total: 7
+  critical: 0
+  warning: 2
+  info: 0
+  total: 2
 status: issues_found
 ---
 
-# Phase 02: Code Review Report (Re-review after fixes)
+# Phase 02: Code Review Report (Round 3 -- Post Round 1+2 Fixes)
 
-**Reviewed:** 2026-05-30T19:00:00Z
+**Reviewed:** 2026-05-30T22:00:00Z
 **Depth:** standard
 **Files Reviewed:** 32
 **Status:** issues_found
 
 ## Summary
 
-This is a re-review of all 32 files after fixes were applied for six findings from the original review (CR-01, CR-02, WR-01, WR-02, WR-03, WR-04; CR-03 was intentionally skipped because `Config::async_support()` is deprecated in wasmtime 45).
+Third adversarial review pass on the wasm-isolation-core phase (32 source files), following two prior rounds of fixes:
 
-All six applied fixes are verified correct. However, the re-review discovered a new critical bug in `file_read_host_fn` where a malicious guest-provided negative `buf_len` causes a host process panic. The original WR-01 fix correctly addressed i32 overflow for **read** operations (guest memory slicing), but the **write** path (writing file contents back to guest memory via `memory.write`) does not bounds-check the `buf_len` parameter before using it as a slice index, reintroducing a panic vector.
+- **Round 1**: CR-01, CR-02 (budget counter leak in `TenantQuotaLimiter`), WR-01 (i32 overflow in bounds checks via `checked_add`), WR-02 (epoch `EngineWeak` for liveness detection), WR-03 (path length cap at 4096), WR-04 (stored `max_concurrent` for reliable `capacity()`)
+- **Round 2**: CR-N01 (`buf_len` sanitization in `file_read_host_fn` to prevent negative-to-usize wrap panic)
+- **CR-03** intentionally deferred (wasmtime 45 deprecated `Config::async_support()`)
 
-Additionally, two info-level issues from the original review remain unfixed.
+### Verified Fixes (All Correct)
+
+All six prior fixes hold solid:
+
+- **CR-01/CR-02**: Delegate-before-commit pattern in `tenant_quota.rs` correctly prevents budget counter leak when inner `InstanceHardLimiter` rejects growth
+- **WR-01**: `checked_add` is consistently applied across all four host functions (`filesystem.rs`, `logging.rs`, `network.rs`) for every pointer+length pair
+- **WR-02**: `epoch.rs` `engine_weak.upgrade()` releases the `Engine` reference immediately after `increment_epoch()`, and exits when `upgrade()` returns `None`
+- **WR-03**: `normalize_path` returns sentinel `PathBuf::from("..")` for paths exceeding 4096 bytes, which `validate_sandbox_path` correctly rejects
+- **WR-04**: `InstancePool::capacity()` returns the stored `max_concurrent` field directly, decoupled from `Semaphore::available_permits()` best-effort API
+- **CR-N01**: `file_read_host_fn` line 108 sanitizes `buf_len` via `if buf_len > 0 { buf_len as usize } else { 0 }`, preventing negative-to-`usize::MAX` wrap that caused host panic in Round 2
+
+### Test Results
+
+All 44 tests pass (9 in jadepaw-core, 35 in jadepaw-wasm including 1 `#[ignore]` stress test). The code compiles cleanly with no warnings.
+
+### Overall Assessment
+
+The core isolation architecture is sound. Resource limiters follow a correct delegating chain, capability checks enforce default-deny, path validation prevents sandbox escape, and memory safety is maintained via consistent `checked_add` usage. Two new findings are flagged below, both WARNING severity with simple fixes. No critical/blocker issues remain.
 
 ---
 
-## Critical Issues
+## Warnings
 
-### CR-N01: Negative `buf_len` causes host process panic in `file_read_host_fn`
+### WR-01: `domain_matches` lacks bare `"*"` wildcard support (inconsistency with `path_matches`)
 
-**File:** `crates/jadepaw-wasm/src/host/filesystem.rs:115`
-**Issue:** In `file_read_host_fn`, the `buf_len` parameter (received from guest as `i32`) is used directly in a slice operation without sanitization for negative values. When `n <= buf_len` (line 108) evaluates to `false` -- which always happens when `buf_len` is negative (e.g., `-1`) -- the else branch at line 115 executes `&contents[..buf_len as usize]`. A negative `i32` cast to `usize` wraps to a very large value (e.g., `usize::MAX`), causing `contents[..usize::MAX]` to panic because the slice index exceeds `contents.len()`.
+**File:** `crates/jadepaw-wasm/src/capability/mod.rs:99-114`
+**Issue:** `path_matches` (line 74-90) supports three patterns: exact match, `"prefix/*"` prefix match, `"prefix*"` bare-suffix prefix match, and bare `"*"` (match-everything). `domain_matches` (line 99-114) only supports exact match and `"*.suffix.com"` subdomain wildcard. There is no equivalent of bare `"*"` for domain patterns.
 
-This is a host process panic triggered by a malicious or buggy guest module. The original WR-01 fix only addressed the pointer-arithmetic overflow in the **read-from-guest-memory** path (lines 63-66), but the **write-to-guest-memory** path at line 115 was not covered.
-
-A secondary issue exists at line 107: `contents.len() as i32` silently wraps for files larger than `i32::MAX` bytes (approx 2 GB) in release builds, or panics in debug builds.
+This asymmetry means `DomainPattern("*")` -- a natural expression of "allow all domains" analogous to `PathPattern("*")` -- silently falls through to `false` (default deny). While this is safe (default deny), it is an inconsistency in the public API that could surprise consumers when network functionality goes live in Phase 4.
 
 **Fix:**
 ```rust
-// Replace lines 107-118 with:
-let n = contents.len();
+fn domain_matches(domain: &str, pattern: &str) -> bool {
+    // Wildcard matches everything (consistent with path_matches)
+    if pattern == "*" {
+        return true;
+    }
 
-// Bounds-check buf_len to prevent negative-to-usize wrapping (CR-N01)
-let buf_len_usize = if buf_len < 0 {
-    0
-} else {
-    buf_len as usize
-};
+    // Exact match
+    if domain == pattern {
+        return true;
+    }
 
-if n <= buf_len_usize {
-    let _ = memory.write(&mut caller, buf_ptr as usize, &contents);
-    n as i32
-} else {
-    warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len_usize);
-    let partial = &contents[..buf_len_usize];
-    let _ = memory.write(&mut caller, buf_ptr as usize, partial);
-    -1 // indicate truncation
+    // Wildcard subdomain: "*.example.com" matches "api.example.com"
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        return domain.ends_with(suffix)
+            && domain.len() > suffix.len()
+            && domain.as_bytes()[domain.len() - suffix.len() - 1] == b'.';
+    }
+
+    false
 }
 ```
 
 ---
 
-## Info
+### WR-02: `file_read_host_fn` truncation path writes partial data but returns `-1` (ambiguous failure mode)
 
-### IN-01: `TenantQuotaLimiter::new_with_budget` duplicates `new` exactly (unfixed from original review)
+**File:** `crates/jadepaw-wasm/src/host/filesystem.rs:111-121`
+**Issue:** When the guest-provided buffer is too small for the file contents, the function:
+1. Writes partial (truncated) data into guest memory (line 120)
+2. Returns `-1` (error indicator)
 
-**File:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs:58-64`
-**Issue:** The `new_with_budget` constructor is documented as "Lower-level constructor that accepts a pre-measured budget in bytes" but its implementation simply delegates to `Self::new(budget_max_mb, tenant_budget_used, inner)` -- identical behavior to the public `new` constructor, which also takes `budget_max_mb: u32`. The `#[doc(hidden)]` attribute hides it from docs but the function is dead weight with no distinct behavior. Was flagged in the original review as IN-01 but remains unfixed.
-**Fix:** Either make `new_with_budget` accept `budget_max_bytes: usize` directly (to fulfill its documented purpose of accepting pre-measured bytes) or remove it and use `new` directly in tests.
+This creates an ambiguous state: guest memory contains data from a partial read, but the return code says "error." The guest cannot distinguish "partial read due to small buffer" from "genuine I/O failure." A guest that interprets `-1` as "retry" would re-read, lose the partial data already written, and possibly loop.
 
-### IN-02: Misleading comment in `normalize_path` test about parent traversal behavior (unfixed from original review)
-
-**File:** `crates/jadepaw-wasm/src/path.rs:236-240`
-**Issue:** The test comment on lines 236-240 contains scratch-work style commentary ("But actually: ..." / "Wait: ..." / "Let's trace: ...") that should be cleaned up. Was flagged in the original review as IN-02 but remains unfixed.
-**Fix:** Replace lines 236-240 with a clean explanation:
+**Fix:** Write nothing on truncation (clean fail), which is simplest and safest for MVP:
 ```rust
-    // "../../..": [] -> push ".." -> [".."] -> pop ".." -> []
-    //             -> push ".." (stack empty) -> [".."]
+let n = contents.len() as i32;
+if n as usize <= buf_len_usize {
+    let _ = memory.write(&mut caller, buf_ptr as usize, &contents);
+    n
+} else {
+    warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len);
+    // Do NOT write partial data -- return clean error with guest memory unchanged
+    -1
+}
 ```
 
 ---
 
-## Verified Fixes
+## Verified Fixes (Round 1 + Round 2)
 
-The following six fixes from the original review are confirmed correctly applied:
-
-| Original ID | Description | Status |
-|-------------|-------------|--------|
-| CR-01 | Budget counter leak in `memory_growing` | Verified fixed. Delegate-before-commit pattern in `tenant_quota.rs:86-91`. |
-| CR-02 | Budget counter leak in `table_growing` | Verified fixed. Same pattern in `tenant_quota.rs:107-110`. |
-| WR-01 | i32 overflow in host function bounds checks | Verified fixed. All `(ptr + len) as usize` replaced with `checked_add` in `filesystem.rs`, `logging.rs`, `network.rs`. |
-| WR-02 | Epoch ticker EngineWeak | Verified fixed. `epoch.rs:77` uses `engine_weak.upgrade()` for both liveness and increment; no `Engine` clone held in thread. |
-| WR-03 | Path length cap | Verified fixed. `path.rs:43-46` adds `MAX_PATH_LEN = 4096` guard. |
-| WR-04 | Stored `max_concurrent` for `capacity()` | Verified fixed. `pool.rs:133,173,249` stores and returns the configured value directly. |
+All six applied fixes remain correctly in place:
 
 | Original ID | Description | Status |
 |-------------|-------------|--------|
-| CR-03 | Missing `async_support(true)` | Intentionally skipped. `Config::async_support()` is deprecated and has no effect in wasmtime 45 (the version used by this project). Adding it would introduce a compiler warning. |
+| CR-01 | Budget counter leak in `memory_growing` | **Verified.** Delegate-before-commit at `tenant_quota.rs:86-91`. |
+| CR-02 | Budget counter leak in `table_growing` | **Verified.** Same pattern at `tenant_quota.rs:107-110`. |
+| WR-01 | i32 overflow in host function bounds checks | **Verified.** All ptr/len pairs use `checked_add` in `filesystem.rs`, `logging.rs`, `network.rs`. |
+| WR-02 | Epoch ticker EngineWeak | **Verified.** `epoch.rs:77-83` upgrades weak ref, increments epoch, drops ref; exits on `None`. |
+| WR-03 | Path length cap | **Verified.** `path.rs:44-47` guards via `MAX_PATH_LEN = 4096`. |
+| WR-04 | Stored `max_concurrent` for `capacity()` | **Verified.** `pool.rs:133,173,247-249` stores and returns configured capacity directly. |
+| CR-N01 | Negative `buf_len` sanitization | **Verified.** `filesystem.rs:108` uses `if buf_len > 0 { buf_len as usize } else { 0 }`. |
+| CR-03 | Missing `async_support(true)` | **Intentionally skipped.** Deprecated no-op in wasmtime 45. |
 
 ---
 
-_Reviewed: 2026-05-30T19:00:00Z_
+_Reviewed: 2026-05-30T22:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
