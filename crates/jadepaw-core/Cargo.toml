@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v7", "serde"] }
 chrono = { workspace = true }
+async-trait = "0.1"
