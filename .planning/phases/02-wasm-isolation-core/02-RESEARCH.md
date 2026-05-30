@@ -602,22 +602,22 @@ fn start_epoch_ticker(engine: &Engine) -> impl Drop {
 | A4 | The pooling-allocator, async, cranelift, and runtime features are all available and compatible in wasmtime 45.0 with `default-features = false`. | Standard Stack | Feature mismatch could cause compilation errors. All four features are listed as enabled by default in the wasmtime docs.rs index, so explicit opt-in with default-features=false should work. |
 | A5 | `Linker::instantiate_pre` with `InstancePre<SessionState>` and `InstancePre::instantiate_async` are compatible with PoolingAllocator. | Architecture Patterns | If InstancePre doesn't work with PoolingAllocator, would need to fall back to `Linker::instantiate_async`. The InstancePre docs confirm it's created via Linker::instantiate_pre and has instantiate_async. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **PoolingAllocatorConfig exact API surface for wasmtime 45.0**
+1. **PoolingAllocatorConfig exact API surface for wasmtime 45.0** — **RESOLVED**
    - What we know: `Config::allocation_strategy(InstanceAllocationStrategy::Pooling { config })` exists. `PoolingAllocatorConfig::default()` exists and has `max_memory_size` method (referenced in D-09). Docs.rs returned 404 for the detailed struct page.
    - What's unclear: Exact method names for `total_memories`, `total_core_instances`, `table_elements`, `memory_pages`. Whether `max_unused_warm_slots` is a config option or an internal detail.
-   - Recommendation: Run `cargo doc --open --package wasmtime` locally to verify exact API before implementation. This is a one-time check that takes <2 minutes.
+   - Resolution: Run `cargo doc --open --package wasmtime` locally to verify exact API before implementation. This is a one-time check that takes <2 minutes. Plan 02-01 Task 2 `<interfaces>` documents expected method names; executor verifies them via `cargo doc` before writing code.
 
-2. **WasiCtx vs WasiP1Ctx for wasm32-wasi guest modules**
+2. **WasiCtx vs WasiP1Ctx for wasm32-wasi guest modules** — **RESOLVED**
    - What we know: Guest modules compile to `wasm32-wasi` target. WASI preview1 is the stable interface. `WasiCtxBuilder::build_p1()` produces a `WasiP1Ctx` for preview1.
    - What's unclear: Whether `WasiP1Ctx` integrates cleanly with `Linker<SessionState>` and async stores. Whether the `p1` feature is required.
-   - Recommendation: Use preview1 (`WasiCtxBuilder::build_p1()`) with the `p1` feature. This is the stable, well-documented path. Preview2/component model is explicitly out of scope (D-03).
+   - Resolution: Use preview1 (`WasiCtxBuilder::build_p1()`) with the `p1` feature. This is the stable, well-documented path. Preview2/component model is explicitly out of scope (D-03). WASI context setup is deferred to a follow-up plan in this phase — guest modules for Phase 2 only need the `"jadepaw"` host function imports.
 
-3. **64MB memory cap: is 64MB the guest module's linear memory limit, or the Store's total memory budget (including wasmtime overhead)?**
+3. **64MB memory cap: is 64MB the guest module's linear memory limit, or the Store's total memory budget (including wasmtime overhead)?** — **RESOLVED**
    - What we know: The requirements say 64MB/instance. StoreLimits and ResourceLimiter control only WebAssembly linear memory growth. wasmtime's own internal structures (VMContext, instance handle, wasm stack) are not counted.
    - What's unclear: What the actual per-instance WASM overhead is with wasmtime 45.0 + PoolingAllocator. The total memory per session could be 64MB (Wasm) + X MB (host overhead).
-   - Recommendation: Measure total process RSS per session in the stress test (success criterion 5: 1,000 concurrent sessions). If overhead per session is significant (e.g., >2MB), account for it in documentation.
+   - Resolution: Measure total process RSS per session in the stress test (success criterion 5: 1,000 concurrent sessions). The 64MB cap applies to guest linear memory only (enforced by InstanceHardLimiter). Plan 02-03 Task 2 stress test measures actual RSS and reports overhead. If overhead per session is significant (e.g., >2MB), document it separately.
 
 ## Environment Availability
 

@@ -54,10 +54,17 @@ Plans:
   5. Running 1,000 concurrent isolated sessions does not cause memory exhaustion (verified by stress test: each session stays within its 64MB cap)
 
 **Plans:** 3 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 ### Phase 3: Agent Runtime
@@ -77,9 +84,11 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+
 **UI hint:** yes
 
 ### Phase 4: Tool System
@@ -98,6 +107,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
@@ -118,6 +128,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
@@ -139,6 +150,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
@@ -160,9 +172,11 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+
 **UI hint:** yes
 
 ### Phase 8: Skill Management UI
@@ -181,9 +195,11 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+
 **UI hint:** yes
 
 ### Phase 9: Observability
@@ -202,6 +218,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+
 - [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
