@@ -20,12 +20,18 @@
 //! - HTTP gateway transport (see jadepaw-gateway)
 //! - Skill compilation (see jadepaw-skill)
 
+pub mod capability;
 pub mod engine;
 pub mod epoch;
+pub mod host;
 pub mod limits;
+pub mod linker;
+pub mod path;
 pub mod session;
 
 pub use engine::EngineFactory;
 pub use epoch::{start_epoch_ticker, EpochTickerGuard};
 pub use limits::{InstanceHardLimiter, TenantQuotaLimiter};
+pub use linker::{create_linker, register_host_functions};
+pub use path::{normalize_path, validate_sandbox_path};
 pub use session::{SessionLimits, SessionState};

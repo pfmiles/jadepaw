@@ -9,6 +9,7 @@ use jadepaw_core::{InstanceCapabilities, SessionId, TenantId};
 use jadepaw_wasm::{
     EngineFactory, InstanceHardLimiter, SessionState, TenantQuotaLimiter,
 };
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use wasmtime::{Module, ResourceLimiter, Store};
@@ -104,6 +105,7 @@ async fn guest_memory_grow_beyond_64mb_traps() {
         SessionId::new(),
         TenantId::new(),
         InstanceCapabilities::default(),
+        PathBuf::from("/tmp"),
     );
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
@@ -150,6 +152,7 @@ async fn guest_infinite_loop_traps_from_fuel_exhaustion() {
         SessionId::new(),
         TenantId::new(),
         InstanceCapabilities::default(),
+        PathBuf::from("/tmp"),
     );
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
@@ -180,7 +183,7 @@ fn session_state_fields() {
     let tid = TenantId::new();
     let caps = InstanceCapabilities::default();
 
-    let state = SessionState::new(sid, tid, caps.clone());
+    let state = SessionState::new(sid, tid, caps.clone(), PathBuf::from("/tmp"));
 
     assert_eq!(state.session_id, sid);
     assert_eq!(state.tenant_id, tid);
@@ -200,7 +203,7 @@ fn session_state_fields() {
 fn session_limits_from_capabilities() {
     let mut caps = InstanceCapabilities::default();
     caps.max_memory_mb = 128;
-    let state = SessionState::new(SessionId::new(), TenantId::new(), caps);
+    let state = SessionState::new(SessionId::new(), TenantId::new(), caps, PathBuf::from("/tmp"));
 
     // SessionLimits should have been created with the capabilities' max_memory_mb
     // We can't easily introspect InstanceHardLimiter, but we can test the limiter

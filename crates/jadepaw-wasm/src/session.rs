@@ -12,6 +12,7 @@
 
 use jadepaw_core::{InstanceCapabilities, SessionId, TenantId};
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::limits::instance_hard::InstanceHardLimiter;
 
@@ -49,16 +50,26 @@ pub struct SessionState {
     pub limits: SessionLimits,
     /// Session creation timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Sandbox root directory for path containment (D-11).
+    ///
+    /// All guest-provided file paths are validated against this root via
+    /// `validate_sandbox_path` before any I/O is performed.
+    pub sandbox_root: PathBuf,
 }
 
 impl SessionState {
-    /// Create a new session state with the given identity and capabilities.
+    /// Create a new session state with the given identity, capabilities,
+    /// and sandbox root directory.
     ///
     /// The `SessionLimits` are initialized from `capabilities.max_memory_mb`.
+    ///
+    /// `sandbox_root` is used by `validate_sandbox_path` to enforce path
+    /// containment for all filesystem host functions.
     pub fn new(
         session_id: SessionId,
         tenant_id: TenantId,
         capabilities: InstanceCapabilities,
+        sandbox_root: PathBuf,
     ) -> Self {
         let hard_limit = InstanceHardLimiter::new(capabilities.max_memory_mb);
         Self {
@@ -67,7 +78,19 @@ impl SessionState {
             capabilities,
             limits: SessionLimits { hard_limit },
             created_at: chrono::Utc::now(),
+            sandbox_root,
         }
+    }
+
+    /// Create a session state with default (empty) capabilities and a given
+    /// sandbox root. Convenience for testing.
+    pub fn with_defaults(sandbox_root: PathBuf) -> Self {
+        Self::new(
+            SessionId::new(),
+            TenantId::new(),
+            InstanceCapabilities::default(),
+            sandbox_root,
+        )
     }
 }
 

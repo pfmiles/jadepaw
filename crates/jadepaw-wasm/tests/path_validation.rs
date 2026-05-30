@@ -8,7 +8,7 @@
 
 use jadepaw_core::{DomainPattern, InstanceCapabilities, PathPattern, SessionId, TenantId, ToolId};
 use jadepaw_wasm::SessionState;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // ============================================================
 // normalize_path tests
@@ -28,9 +28,10 @@ fn normalize_path_collapses_parent() {
 /// Test 2: normalize_path handles multiple ".." that go above.
 #[test]
 fn normalize_path_multiple_parent_above_root() {
-    // "foo/../../../etc/passwd" strips "foo", then goes above -> "../etc/passwd"
+    // "foo/../../../etc/passwd": "foo" pops, then "../.." are dropped (stack empty).
+    // The traversal is caught by validate_sandbox_path's canonicalize+prefix check.
     let result = jadepaw_wasm::normalize_path("foo/../../../etc/passwd");
-    let expected: PathBuf = ["..", "..", "etc", "passwd"].iter().collect();
+    let expected: PathBuf = ["etc", "passwd"].iter().collect();
     assert_eq!(result, expected);
 }
 
@@ -142,7 +143,7 @@ fn validate_sandbox_path_nonexistent() {
 // ============================================================
 
 fn make_session_state(caps: InstanceCapabilities) -> SessionState {
-    SessionState::new(SessionId::new(), TenantId::new(), caps)
+    SessionState::new(SessionId::new(), TenantId::new(), caps, PathBuf::from("/tmp"))
 }
 
 /// Test 12: can_read_file returns true when path matches a PathPattern.

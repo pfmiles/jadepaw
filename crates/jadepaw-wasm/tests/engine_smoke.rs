@@ -8,6 +8,7 @@
 use jadepaw_wasm::EngineFactory;
 use jadepaw_wasm::SessionState;
 use jadepaw_core::{InstanceCapabilities, SessionId, TenantId};
+use std::path::PathBuf;
 use wasmtime::{Module, Store};
 
 /// Full pipeline: EngineFactory -> Store -> Module -> Instance -> _start.
@@ -21,7 +22,7 @@ async fn engine_smoke_full_pipeline() {
     let tenant_id = TenantId::new();
     let capabilities = InstanceCapabilities::default();
 
-    let session_state = SessionState::new(session_id, tenant_id, capabilities);
+    let session_state = SessionState::new(session_id, tenant_id, capabilities, PathBuf::from("/tmp"));
     let mut store = Store::new(&engine, session_state);
 
     // Register the ResourceLimiter (Pitfall 4 prevention)
@@ -69,6 +70,7 @@ async fn engine_has_fuel_enabled() {
         SessionId::new(),
         TenantId::new(),
         InstanceCapabilities::default(),
+        PathBuf::from("/tmp"),
     );
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
@@ -90,7 +92,7 @@ async fn session_state_accessible_from_store() {
     let tid = TenantId::new();
     let caps = InstanceCapabilities::default();
 
-    let state = SessionState::new(sid, tid, caps);
+    let state = SessionState::new(sid, tid, caps, PathBuf::from("/tmp"));
     let mut store = Store::new(&engine, state);
 
     // Access via data()
