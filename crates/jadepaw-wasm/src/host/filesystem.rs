@@ -110,9 +110,15 @@ pub fn file_read_host_fn(
         // Write result to guest memory via memory.write (bounds-checked)
         let n = contents.len() as i32;
         if n as usize <= buf_len_usize {
-            // memory.write uses AsContextMut, which Caller implements
-            let _ = memory.write(&mut caller, buf_ptr as usize, &contents);
-            n
+            // buf_ptr is guest-controlled and untrusted — memory.write can still fail
+            // if buf_ptr + contents.len() exceeds actual memory bounds.
+            match memory.write(&mut caller, buf_ptr as usize, &contents) {
+                Ok(()) => n,
+                Err(e) => {
+                    warn!(%session_id, "file_read: memory.write failed (buf_ptr={}, len={}): {}", buf_ptr, n, e);
+                    -1
+                }
+            }
         } else {
             warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len);
             -1 // buffer too small — no partial write to avoid ambiguous state
