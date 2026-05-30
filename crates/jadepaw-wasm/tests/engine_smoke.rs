@@ -33,13 +33,14 @@ async fn engine_smoke_full_pipeline() {
         .expect("set_fuel should succeed when consume_fuel is enabled");
 
     // Epoch deadline configured (Pitfall 5 prevention)
-    store
-        .epoch_deadline_async_yield_and_update(100)
-        .expect("epoch_deadline should succeed when epoch_interruption is enabled");
+    store.epoch_deadline_async_yield_and_update(100);
 
     // Load the noop guest module
+    // Use CARGO_MANIFEST_DIR to locate fixtures regardless of cwd
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let wat_path = std::path::Path::new(&manifest_dir).join("tests/fixtures/noop.wat");
     let wasm_bytes =
-        wat::parse_file("crates/jadepaw-wasm/tests/fixtures/noop.wat")
+        wat::parse_file(&wat_path)
             .expect("noop.wat should parse");
 
     let module = Module::new(&engine, wasm_bytes).expect("Module::new should succeed");

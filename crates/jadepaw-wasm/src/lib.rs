@@ -1,15 +1,17 @@
 //! # jadepaw-wasm
 //!
-//! WebAssembly runtime integration: instance pool management, wasmtime Engine
-//! configuration, host function registration, and resource limiting.
+//! WebAssembly runtime integration: wasmtime Engine configuration, session
+//! management, host function registration, and resource limiting.
 //!
 //! ## What lives here
 //!
 //! - wasmtime Engine setup, Config, and compilation cache
-//! - Pre-warmed instance pool with state injection on acquire
-//! - Host function definitions and linker configuration
-//! - ResourceLimiter implementation for per-instance caps
-//! - WASI context setup and preopens directory management
+//! - Pre-warmed instance pool with state injection on acquire (Phase 2+)
+//! - Host function definitions and linker configuration (Phase 2+)
+//! - ResourceLimiter implementations for per-instance and per-tenant caps
+//! - SessionState for `Store<T>` data — per-session identity and limits
+//! - Epoch ticker background thread for cooperative yielding
+//! - WASI context setup and preopens directory management (Phase 2+)
 //!
 //! ## What does NOT live here
 //!
@@ -17,3 +19,13 @@
 //! - Core data types (see jadepaw-core)
 //! - HTTP gateway transport (see jadepaw-gateway)
 //! - Skill compilation (see jadepaw-skill)
+
+pub mod engine;
+pub mod epoch;
+pub mod limits;
+pub mod session;
+
+pub use engine::EngineFactory;
+pub use epoch::{start_epoch_ticker, EpochTickerGuard};
+pub use limits::{InstanceHardLimiter, TenantQuotaLimiter};
+pub use session::{SessionLimits, SessionState};

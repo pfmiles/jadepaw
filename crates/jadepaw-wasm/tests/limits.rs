@@ -7,7 +7,7 @@
 
 use jadepaw_core::{InstanceCapabilities, SessionId, TenantId};
 use jadepaw_wasm::{
-    EngineFactory, InstanceHardLimiter, SessionLimits, SessionState, TenantQuotaLimiter,
+    EngineFactory, InstanceHardLimiter, SessionState, TenantQuotaLimiter,
 };
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -108,9 +108,7 @@ async fn guest_memory_grow_beyond_64mb_traps() {
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     store.set_fuel(1_000_000).expect("set_fuel");
-    store
-        .epoch_deadline_async_yield_and_update(100)
-        .expect("epoch_deadline");
+    store.epoch_deadline_async_yield_and_update(100);
 
     let instance =
         wasmtime::Instance::new_async(&mut store, &module, &[])
@@ -157,9 +155,7 @@ async fn guest_infinite_loop_traps_from_fuel_exhaustion() {
     store.limiter(|s| &mut s.limits.hard_limit);
     // Tiny fuel budget — 1000 units should run out fast
     store.set_fuel(1_000).expect("set_fuel");
-    store
-        .epoch_deadline_async_yield_and_update(100)
-        .expect("epoch_deadline");
+    store.epoch_deadline_async_yield_and_update(100);
 
     let instance =
         wasmtime::Instance::new_async(&mut store, &module, &[])

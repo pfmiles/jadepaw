@@ -6,8 +6,14 @@ license.workspace = true
 
 [dependencies]
 jadepaw-core = { path = "../jadepaw-core" }
-wasmtime = { workspace = true }
+wasmtime = { workspace = true, features = ["pooling-allocator", "async", "cranelift", "runtime"] }
 tokio = { workspace = true }
+anyhow = "1"
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+wat = "1"
 
 [features]
 default = ["single-node"]
