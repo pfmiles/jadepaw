@@ -80,12 +80,15 @@ impl ResourceLimiter for TenantQuotaLimiter {
             return Ok(false); // Recoverable: guest receives -1 from memory.grow
         }
 
+        // Delegate to inner InstanceHardLimiter for the per-instance hard cap FIRST.
+        // Only commit the tenant budget if inner approves — prevents counter leak
+        // when the inner limiter rejects the growth (CR-01).
+        let inner_result = self.inner.memory_growing(current, desired, maximum)?;
+
+        // Now it's safe to commit the tenant budget:
         self.tenant_budget_used
             .fetch_add(delta, Ordering::Relaxed);
-
-        // Delegate to inner InstanceHardLimiter for the per-instance hard cap.
-        // If inner returns Err(), the Store is poisoned (security boundary).
-        self.inner.memory_growing(current, desired, maximum)
+        Ok(inner_result)
     }
 
     fn table_growing(
@@ -100,9 +103,11 @@ impl ResourceLimiter for TenantQuotaLimiter {
         if used + delta > self.tenant_budget_max {
             return Ok(false);
         }
+        // Delegate first, commit budget only on success (CR-02)
+        let inner_result = self.inner.table_growing(current, desired, maximum)?;
         self.tenant_budget_used
             .fetch_add(delta, Ordering::Relaxed);
-        self.inner.table_growing(current, desired, maximum)
+        Ok(inner_result)
     }
 }
 
