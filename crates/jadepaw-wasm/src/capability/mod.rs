@@ -79,7 +79,11 @@ impl SessionState {
 
         // Prefix match: pattern ends with "/*" or just matches up to the wildcard
         if let Some(prefix) = pattern.strip_suffix("/*") {
-            return path.starts_with(prefix);
+            // Must either be exactly the prefix (empty path after prefix) or
+            // the prefix followed by '/' to enforce directory boundary.
+            return path == prefix
+                || (path.starts_with(prefix)
+                    && path.as_bytes().get(prefix.len()) == Some(&b'/'));
         }
         if let Some(prefix) = pattern.strip_suffix('*') {
             return path.starts_with(prefix);
