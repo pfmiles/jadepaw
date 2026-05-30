@@ -103,16 +103,20 @@ pub fn file_read_host_fn(
             }
         };
 
+        // Sanitize guest-provided buf_len: negative values saturate to 0
+        // (will be rejected as "buffer too small" below instead of panicking)
+        let buf_len_usize = if buf_len > 0 { buf_len as usize } else { 0 };
+
         // Write result to guest memory via memory.write (bounds-checked)
         let n = contents.len() as i32;
-        if n <= buf_len {
+        if n as usize <= buf_len_usize {
             // memory.write uses AsContextMut, which Caller implements
             let _ = memory.write(&mut caller, buf_ptr as usize, &contents);
             n
         } else {
             warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len);
             // Write what fits
-            let partial = &contents[..buf_len as usize];
+            let partial = &contents[..buf_len_usize];
             let _ = memory.write(&mut caller, buf_ptr as usize, partial);
             -1 // indicate truncation
         }
