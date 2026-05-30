@@ -1,6 +1,6 @@
 ---
 phase: 02-wasm-isolation-core
-reviewed: 2026-05-30T22:00:00Z
+reviewed: 2026-05-30T23:00:00Z
 depth: standard
 files_reviewed: 32
 files_reviewed_list:
@@ -37,125 +37,164 @@ files_reviewed_list:
   - crates/jadepaw-wasm/tests/pool.rs
   - crates/jadepaw-wasm/tests/stress_concurrent.rs
 findings:
-  critical: 0
-  warning: 2
-  info: 0
-  total: 2
+  critical: 1
+  warning: 1
+  info: 1
+  total: 3
 status: issues_found
 ---
 
-# Phase 02: Code Review Report (Round 3 -- Post Round 1+2 Fixes)
+# Phase 02: Code Review Report (Round 4 -- Regression Pass)
 
-**Reviewed:** 2026-05-30T22:00:00Z
+**Reviewed:** 2026-05-30T23:00:00Z
 **Depth:** standard
 **Files Reviewed:** 32
 **Status:** issues_found
 
 ## Summary
 
-Third adversarial review pass on the wasm-isolation-core phase (32 source files), following two prior rounds of fixes:
+Fourth adversarial review pass on the wasm-isolation-core phase (32 source files). This pass focuses on **regression checking** — verifying all prior fixes (Rounds 1-3) remain intact, and identifying any remaining defects missed in earlier rounds.
 
-- **Round 1**: CR-01, CR-02 (budget counter leak in `TenantQuotaLimiter`), WR-01 (i32 overflow in bounds checks via `checked_add`), WR-02 (epoch `EngineWeak` for liveness detection), WR-03 (path length cap at 4096), WR-04 (stored `max_concurrent` for reliable `capacity()`)
-- **Round 2**: CR-N01 (`buf_len` sanitization in `file_read_host_fn` to prevent negative-to-usize wrap panic)
-- **CR-03** intentionally deferred (wasmtime 45 deprecated `Config::async_support()`)
+### Prior Round Fix Verification
 
-### Verified Fixes (All Correct)
+All fixes from Rounds 1-3 verified as still correct:
 
-All six prior fixes hold solid:
+| ID | Description | Status |
+|----|-------------|--------|
+| CR-01/02 | Budget counter leak (delegate-before-commit) | **Still correct.** `tenant_quota.rs:86-91,107-110`. |
+| WR-01 | i32 overflow via `checked_add` | **Still correct.** All four host functions use `checked_add` consistently. |
+| WR-02 | Epoch `EngineWeak` liveness detection | **Still correct.** `epoch.rs:77-83`. |
+| WR-03 | Path length cap at 4096 | **Still correct.** `path.rs:44-47`. |
+| WR-04 | Stored `max_concurrent` for `capacity()` | **Still correct.** `pool.rs:133,247-249`. |
+| CR-N01 | Negative `buf_len` sanitization | **Still correct.** `filesystem.rs:108`. |
+| WR-N01 (R3) | Domain bare `"*"` wildcard | **Still correct.** `capability/mod.rs:101-103` + test at line 169-174. |
+| WR-N02 (R3) | Partial write on buffer-too-small | **Still correct.** `filesystem.rs:112-119` — returns `-1` without writing data. |
+| CR-03 | Missing `async_support(true)` | **Intentionally skipped.** Deprecated no-op in wasmtime 45. Confirmed no effect. |
 
-- **CR-01/CR-02**: Delegate-before-commit pattern in `tenant_quota.rs` correctly prevents budget counter leak when inner `InstanceHardLimiter` rejects growth
-- **WR-01**: `checked_add` is consistently applied across all four host functions (`filesystem.rs`, `logging.rs`, `network.rs`) for every pointer+length pair
-- **WR-02**: `epoch.rs` `engine_weak.upgrade()` releases the `Engine` reference immediately after `increment_epoch()`, and exits when `upgrade()` returns `None`
-- **WR-03**: `normalize_path` returns sentinel `PathBuf::from("..")` for paths exceeding 4096 bytes, which `validate_sandbox_path` correctly rejects
-- **WR-04**: `InstancePool::capacity()` returns the stored `max_concurrent` field directly, decoupled from `Semaphore::available_permits()` best-effort API
-- **CR-N01**: `file_read_host_fn` line 108 sanitizes `buf_len` via `if buf_len > 0 { buf_len as usize } else { 0 }`, preventing negative-to-`usize::MAX` wrap that caused host panic in Round 2
+### Compilation Status
 
-### Test Results
+`cargo check --workspace`: clean. All 44 tests pass (9 in jadepaw-core, 35 in jadepaw-wasm including 1 `#[ignore]` stress test). Clippy reports 3 `new_without_default` warnings on ID types (non-blocking, INFO).
 
-All 44 tests pass (9 in jadepaw-core, 35 in jadepaw-wasm including 1 `#[ignore]` stress test). The code compiles cleanly with no warnings.
+### New Findings
 
-### Overall Assessment
-
-The core isolation architecture is sound. Resource limiters follow a correct delegating chain, capability checks enforce default-deny, path validation prevents sandbox escape, and memory safety is maintained via consistent `checked_add` usage. Two new findings are flagged below, both WARNING severity with simple fixes. No critical/blocker issues remain.
-
----
-
-## Warnings
-
-### WR-01: `domain_matches` lacks bare `"*"` wildcard support (inconsistency with `path_matches`)
-
-**File:** `crates/jadepaw-wasm/src/capability/mod.rs:99-114`
-**Issue:** `path_matches` (line 74-90) supports three patterns: exact match, `"prefix/*"` prefix match, `"prefix*"` bare-suffix prefix match, and bare `"*"` (match-everything). `domain_matches` (line 99-114) only supports exact match and `"*.suffix.com"` subdomain wildcard. There is no equivalent of bare `"*"` for domain patterns.
-
-This asymmetry means `DomainPattern("*")` -- a natural expression of "allow all domains" analogous to `PathPattern("*")` -- silently falls through to `false` (default deny). While this is safe (default deny), it is an inconsistency in the public API that could surprise consumers when network functionality goes live in Phase 4.
-
-**Fix:**
-```rust
-fn domain_matches(domain: &str, pattern: &str) -> bool {
-    // Wildcard matches everything (consistent with path_matches)
-    if pattern == "*" {
-        return true;
-    }
-
-    // Exact match
-    if domain == pattern {
-        return true;
-    }
-
-    // Wildcard subdomain: "*.example.com" matches "api.example.com"
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        return domain.ends_with(suffix)
-            && domain.len() > suffix.len()
-            && domain.as_bytes()[domain.len() - suffix.len() - 1] == b'.';
-    }
-
-    false
-}
-```
+One BLOCKER, one WARNING, one INFO. Details below.
 
 ---
 
-### WR-02: `file_read_host_fn` truncation path writes partial data but returns `-1` (ambiguous failure mode)
+## Critical Issues
 
-**File:** `crates/jadepaw-wasm/src/host/filesystem.rs:111-121`
-**Issue:** When the guest-provided buffer is too small for the file contents, the function:
-1. Writes partial (truncated) data into guest memory (line 120)
-2. Returns `-1` (error indicator)
+### CR-01: `file_read_host_fn` silently ignores `memory.write` failure, returning false-positive byte count
 
-This creates an ambiguous state: guest memory contains data from a partial read, but the return code says "error." The guest cannot distinguish "partial read due to small buffer" from "genuine I/O failure." A guest that interprets `-1` as "retry" would re-read, lose the partial data already written, and possibly loop.
+**File:** `crates/jadepaw-wasm/src/host/filesystem.rs:112-115`
+**Issue:** When the guest buffer (`buf_ptr` + `buf_len`) is declared large enough for the file contents, the function calls `memory.write(&mut caller, buf_ptr as usize, &contents)` on line 114 and discards the `Result` with `let _`. However, `memory.write` can fail even when `n <= buf_len_usize` — specifically when `buf_ptr + contents.len()` exceeds the actual guest memory size (`Memory::data_size`). `buf_ptr` is completely untrusted guest input and is never bounds-checked.
 
-**Fix:** Write nothing on truncation (clean fail), which is simplest and safest for MVP:
+When this `memory.write` call returns `Err(MemoryAccessError)`, the error is silently discarded and the function returns `n` (a positive byte count). The guest receives a **false-positive** return value — it believes the file was read successfully and data was written to its buffer, when in fact no data was written. The guest's buffer contains whatever was there before (potentially stale data from a previous operation in that pooled memory slot, or uninitialized zeros).
+
+This is a correctness bug: the guest can act on stale/garbage data as if it were the actual file contents. While not a sandbox escape (the write is contained within guest memory), it violates the contract of the `file_read` host function.
+
+**Reproduction scenario:**
+1. Guest sets `buf_len = 1024` (large enough for file contents) but `buf_ptr = memory_size - 10` (near memory boundary)
+2. File is 20 bytes long. `n (20) <= buf_len_usize (1024)` is true.
+3. `memory.write(&mut caller, buf_ptr, &contents)` returns `Err(MemoryAccessError)` because `buf_ptr + 20 > memory_size`
+4. The `let _` discards the error. Function returns `20` (success).
+5. Guest reads its buffer at offset `buf_ptr` — finds stale data, believes it's the file contents.
+
+**Fix:** Check the `memory.write` return value and return `-1` on failure:
+
 ```rust
 let n = contents.len() as i32;
 if n as usize <= buf_len_usize {
-    let _ = memory.write(&mut caller, buf_ptr as usize, &contents);
-    n
+    // buf_ptr is guest-controlled and untrusted — memory.write can still fail
+    // if buf_ptr + contents.len() exceeds actual memory bounds
+    match memory.write(&mut caller, buf_ptr as usize, &contents) {
+        Ok(()) => n,
+        Err(e) => {
+            warn!(%session_id, "file_read: memory.write failed (buf_ptr={}, len={}): {}", buf_ptr, n, e);
+            -1
+        }
+    }
 } else {
     warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len);
-    // Do NOT write partial data -- return clean error with guest memory unchanged
     -1
 }
 ```
 
 ---
 
-## Verified Fixes (Round 1 + Round 2)
+## Warnings
 
-All six applied fixes remain correctly in place:
+### WR-01: `path_matches` prefix matching for `"/*"` suffix is overly broad — matches paths sharing the prefix as a substring
 
-| Original ID | Description | Status |
-|-------------|-------------|--------|
-| CR-01 | Budget counter leak in `memory_growing` | **Verified.** Delegate-before-commit at `tenant_quota.rs:86-91`. |
-| CR-02 | Budget counter leak in `table_growing` | **Verified.** Same pattern at `tenant_quota.rs:107-110`. |
-| WR-01 | i32 overflow in host function bounds checks | **Verified.** All ptr/len pairs use `checked_add` in `filesystem.rs`, `logging.rs`, `network.rs`. |
-| WR-02 | Epoch ticker EngineWeak | **Verified.** `epoch.rs:77-83` upgrades weak ref, increments epoch, drops ref; exits on `None`. |
-| WR-03 | Path length cap | **Verified.** `path.rs:44-47` guards via `MAX_PATH_LEN = 4096`. |
-| WR-04 | Stored `max_concurrent` for `capacity()` | **Verified.** `pool.rs:133,173,247-249` stores and returns configured capacity directly. |
-| CR-N01 | Negative `buf_len` sanitization | **Verified.** `filesystem.rs:108` uses `if buf_len > 0 { buf_len as usize } else { 0 }`. |
-| CR-03 | Missing `async_support(true)` | **Intentionally skipped.** Deprecated no-op in wasmtime 45. |
+**File:** `crates/jadepaw-wasm/src/capability/mod.rs:81-82`
+**Issue:** When a `PathPattern` uses the `"/*"` suffix, `strip_suffix("/*")` extracts the prefix, then `path.starts_with(prefix)` checks if the path starts with that prefix. This is overly broad: pattern `"data/*"` produces prefix `"data"`, and `"data_extra/secret.txt".starts_with("data")` returns `true`. The guest would unexpectedly gain read access to files in `data_extra/` when only `data/` was intended.
+
+Similarly for bare-`*` suffix: pattern `"data*"` produces prefix `"data"`, and `"data_extra.txt".starts_with("data")` matches. The `"/*"` variant specifically implies a directory boundary that the current code does not enforce.
+
+**Note:** The `"/*"` suffix test at line 143 (`path_matches_prefix`) uses `"data/nested/file.txt"` which correctly matches, but the edge case `assert!(!path_matches("data_extra/file.txt", "data/*"))` is missing from the test suite.
+
+**Fix:** For the `"/*"` variant, ensure the next character after the prefix is `/`:
+
+```rust
+if let Some(prefix) = pattern.strip_suffix("/*") {
+    // Must either be exactly the prefix (empty path after prefix) or
+    // the prefix followed by '/' to enforce directory boundary
+    return path == prefix
+        || (path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/'));
+}
+```
+
+For the bare-`*` variant, the current behavior (`starts_with`) is arguably correct since there's no directory boundary implied. Consider documenting this difference or adding a `min_len` check to prevent exact prefix match if desired.
 
 ---
 
-_Reviewed: 2026-05-30T22:00:00Z_
+## Info
+
+### IN-01: Missing `Default` impl on `SessionId`, `TenantId`, `ToolId` (clippy `new_without_default`)
+
+**File:** `crates/jadepaw-core/src/types.rs:18,45,72`
+**Issue:** All three newtype wrappers implement `fn new() -> Self` without a corresponding `Default` impl. Clippy reports `new_without_default` warnings on all three. While `new()` creates a new UUID v7, `Default` should delegate to `new()` to follow Rust conventions.
+
+**Fix:** Add `Default` impls:
+
+```rust
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Default for TenantId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Default for ToolId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+
+---
+
+## Verified Fixes (Rounds 1-3)
+
+All eight applied fixes from prior rounds remain correctly in place and pass tests:
+
+| Original ID | Description | Status |
+|-------------|-------------|--------|
+| CR-01 | Budget counter leak in `memory_growing` | Verified. `tenant_quota.rs:86-91` delegate-before-commit. |
+| CR-02 | Budget counter leak in `table_growing` | Verified. `tenant_quota.rs:107-110` same pattern. |
+| WR-01 | i32 overflow in host function bounds checks | Verified. All ptr/len pairs use `checked_add` in all four host functions. |
+| WR-02 | Epoch ticker EngineWeak | Verified. `epoch.rs:77-83`. |
+| WR-03 | Path length cap at 4096 | Verified. `path.rs:44-47`. |
+| WR-04 | Stored `max_concurrent` for `capacity()` | Verified. `pool.rs:133,247-249`. |
+| CR-N01 | Negative `buf_len` sanitization | Verified. `filesystem.rs:108`. |
+| WR-N01 (R3) | Domain bare `"*"` wildcard | Verified. `capability/mod.rs:101-103` + test at lines 169-174. |
+| WR-N02 (R3) | Partial write on buffer-too-small | Verified. `filesystem.rs:112-119` clean fail, no partial write. |
+| CR-03 | Missing `async_support(true)` | Intentionally skipped. Wasmtime 45 makes `async_support` a deprecated no-op. |
+
+---
+
+_Reviewed: 2026-05-30T23:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_

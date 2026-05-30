@@ -10,6 +10,8 @@
 //! - ReAct step executor: think -> tool -> observe -> decide
 //! - Tool registry with MCP-compatible protocol adapter
 //! - Short-term memory (window compression) and long-term memory (vector DB)
+//! - `LlmClient` trait: unified LLM backend abstraction for provider decoupling
+//!   (OpenAI-compatible via async-openai, Anthropic via native API — Phase 3)
 //!
 //! ## What does NOT live here
 //!
