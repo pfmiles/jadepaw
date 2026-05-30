@@ -94,9 +94,15 @@ impl SessionState {
     /// Simple glob-like pattern matching for domains.
     ///
     /// Supported patterns:
+    /// - `"*"` — matches any domain
     /// - `"exact.domain.com"` — exact match only
     /// - `"*.example.com"` — matches any single subdomain of example.com
     fn domain_matches(domain: &str, pattern: &str) -> bool {
+        // Wildcard matches everything
+        if pattern == "*" {
+            return true;
+        }
+
         // Exact match
         if domain == pattern {
             return true;
@@ -157,5 +163,13 @@ mod tests {
         assert!(!SessionState::domain_matches("example.com", "*.example.com"));
         // Wildcard should not match multiple subdomain levels
         assert!(!SessionState::domain_matches("api.other.com", "*.example.com"));
+    }
+
+    #[test]
+    fn domain_matches_bare_star() {
+        // Bare "*" matches any domain (consistent with path_matches behavior)
+        assert!(SessionState::domain_matches("example.com", "*"));
+        assert!(SessionState::domain_matches("api.internal.corp", "*"));
+        assert!(SessionState::domain_matches("localhost", "*"));
     }
 }

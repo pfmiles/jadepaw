@@ -115,10 +115,7 @@ pub fn file_read_host_fn(
             n
         } else {
             warn!(%session_id, "file_read: output buffer too small (need {}, have {})", n, buf_len);
-            // Write what fits
-            let partial = &contents[..buf_len_usize];
-            let _ = memory.write(&mut caller, buf_ptr as usize, partial);
-            -1 // indicate truncation
+            -1 // buffer too small — no partial write to avoid ambiguous state
         }
     })
 }
