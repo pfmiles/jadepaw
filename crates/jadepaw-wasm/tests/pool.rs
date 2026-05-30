@@ -5,18 +5,23 @@
 //! convention for wasmtime async tests.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use jadepaw_core::{InstanceCapabilities, SessionId, TenantId};
 use jadepaw_wasm::{InstancePool, PoolConfig, SessionState};
 
+/// Thread-safe counter for unique temp directory names (avoids uuid dependency).
+static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Fixture: creates a SessionState with default capabilities and a temp sandbox root.
 fn make_session_state() -> SessionState {
     let session_id = SessionId::new();
     let tenant_id = TenantId::new();
     let capabilities = InstanceCapabilities::default();
-    let sandbox_root = std::env::temp_dir().join(format!("jadepaw-pool-test-{}", uuid::Uuid::new_v4()));
+    let n = DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let sandbox_root = std::env::temp_dir().join(format!("jadepaw-pool-test-{}", n));
     SessionState::new(session_id, tenant_id, capabilities, sandbox_root)
 }
 

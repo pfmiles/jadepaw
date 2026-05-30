@@ -8,6 +8,7 @@ license.workspace = true
 jadepaw-core = { path = "../jadepaw-core" }
 wasmtime = { workspace = true, features = ["pooling-allocator", "async", "cranelift", "runtime"] }
 tokio = { workspace = true }
+dashmap = { workspace = true }
 anyhow = "1"
 chrono = { workspace = true }
 tracing = { workspace = true }
