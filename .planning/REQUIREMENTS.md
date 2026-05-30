@@ -26,10 +26,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Security & Isolation
 
-- [ ] **SEC-01**: Wasm 实例隔离——每个会话运行在独立 wasmtime Store 中，线性内存提供硬件级隔离
-- [ ] **SEC-02**: wasmtime Fuel + Epoch 双重资源计量从 Day 1 启用，显式 StoreLimits（64MB 内存上限）
-- [ ] **SEC-03**: 工具执行通过宿主中介，路径参数强制标准化和沙箱边界检查
-- [ ] **SEC-04**: 能力白名单——实例初始化时声明允许的工具和能力，默认拒绝
+- [x] **SEC-01**: Wasm 实例隔离——每个会话运行在独立 wasmtime Store 中，线性内存提供硬件级隔离
+- [x] **SEC-02**: wasmtime Fuel + Epoch 双重资源计量从 Day 1 启用，显式 StoreLimits（64MB 内存上限）
+- [x] **SEC-03**: 工具执行通过宿主中介，路径参数强制标准化和沙箱边界检查
+- [x] **SEC-04**: 能力白名单——实例初始化时声明允许的工具和能力，默认拒绝
 
 ### User Interface
 
@@ -114,10 +114,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MEM-02 | Phase 5: Session Memory | Pending |
 | SKILL-01 | Phase 6: Skill System | Pending |
 | SKILL-02 | Phase 6: Skill System | Pending |
-| SEC-01 | Phase 2: Wasm Isolation Core | Pending |
-| SEC-02 | Phase 2: Wasm Isolation Core | Pending |
-| SEC-03 | Phase 2: Wasm Isolation Core | Pending |
-| SEC-04 | Phase 2: Wasm Isolation Core | Pending |
+| SEC-01 | Phase 2: Wasm Isolation Core | Complete |
+| SEC-02 | Phase 2: Wasm Isolation Core | Complete |
+| SEC-03 | Phase 2: Wasm Isolation Core | Complete |
+| SEC-04 | Phase 2: Wasm Isolation Core | Complete |
 | UI-01 | Phase 7: Web Chat UI | Pending |
 | UI-02 | Phase 8: Skill Management UI | Pending |
 | OBS-01 | Phase 9: Observability | Pending |
