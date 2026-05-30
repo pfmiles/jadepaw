@@ -129,6 +129,8 @@ pub struct InstancePool {
     instance_pre: Arc<InstancePre<SessionState>>,
     /// Concurrency bound — max concurrent sessions.
     semaphore: Arc<Semaphore>,
+    /// Maximum concurrent sessions (stored for reliable capacity() — WR-04).
+    max_concurrent: usize,
     /// Active session tracking (D-05).
     active_sessions: Arc<DashMap<SessionId, ()>>,
 }
@@ -168,6 +170,7 @@ impl InstancePool {
             _linker: linker,
             instance_pre,
             semaphore: Arc::new(Semaphore::new(config.max_concurrent)),
+            max_concurrent: config.max_concurrent,
             active_sessions: Arc::new(DashMap::new()),
         })
     }
@@ -237,7 +240,11 @@ impl InstancePool {
     }
 
     /// Return the pool's maximum capacity.
+    ///
+    /// Returns the configured `max_concurrent` value directly rather than
+    /// relying on `Semaphore::available_permits()`, which is documented as
+    /// a best-effort operation with no accuracy guarantees (WR-04).
     pub fn capacity(&self) -> usize {
-        self.semaphore.available_permits() + self.active_count()
+        self.max_concurrent
     }
 }
