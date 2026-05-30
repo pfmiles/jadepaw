@@ -51,9 +51,11 @@ pub fn normalize_path(path: &str) -> PathBuf {
                 // Pop last component if present
                 if !components.is_empty() {
                     components.pop();
+                } else {
+                    // Stack is empty — ".." goes above root. Keep it so
+                    // validate_sandbox_path can catch the traversal.
+                    components.push("..");
                 }
-                // If empty, the ".." goes above root — don't add it.
-                // validate_sandbox_path catches traversal via canonicalize+prefix.
             }
             _ => {
                 components.push(component);
@@ -72,7 +74,10 @@ pub fn normalize_path(path: &str) -> PathBuf {
 ///
 /// 1. Call `normalize_path(guest_path)` to remove `..` and `.` components
 /// 2. Join the normalized relative path with `sandbox_root`
-/// 3. Call `Path::canonicalize()` to resolve any remaining symlinks
+/// 3. Resolve the path: if the file exists, canonicalize it (resolves symlinks).
+///    If it does NOT exist (e.g., file_write target), canonicalize the parent
+///    directory and re-join with the filename. This prevents TOCTOU issues
+///    while allowing writes to new files.
 /// 4. Verify that the resolved path starts with the sandbox root
 ///
 /// # Returns
@@ -85,16 +90,17 @@ pub fn normalize_path(path: &str) -> PathBuf {
 ///
 /// `guest_path` is untrusted input from Wasm guest code. Every byte is assumed
 /// malicious until proven otherwise (Pitfall 3).
-pub fn validate_sandbox_path(guest_path: &str, sandbox_root: &Path) -> Result<PathBuf, JadepawError> {
+pub fn validate_sandbox_path(
+    guest_path: &str,
+    sandbox_root: &Path,
+) -> Result<PathBuf, JadepawError> {
     // Ensure sandbox_root exists and is canonical
-    let sandbox_root = sandbox_root
-        .canonicalize()
-        .map_err(|e| {
-            JadepawError::path_validation(
-                guest_path.to_string(),
-                format!("sandbox root is not accessible: {}", e),
-            )
-        })?;
+    let sandbox_root = sandbox_root.canonicalize().map_err(|e| {
+        JadepawError::path_validation(
+            guest_path.to_string(),
+            format!("sandbox root is not accessible: {}", e),
+        )
+    })?;
 
     // Step 1: Normalize guest path (removes .., ., leading /)
     let normalized = normalize_path(guest_path);
@@ -102,13 +108,58 @@ pub fn validate_sandbox_path(guest_path: &str, sandbox_root: &Path) -> Result<Pa
     // Step 2: Join with sandbox root
     let candidate = sandbox_root.join(&normalized);
 
-    // Step 3: Canonicalize to resolve symlinks and final path
-    let resolved = candidate.canonicalize().map_err(|e| {
-        JadepawError::path_validation(
-            guest_path.to_string(),
-            format!("path resolution failed: {}", e),
+    // Step 3: Resolve path to catch symlink attacks
+    // - If the path exists, canonicalize directly (resolves symlinks)
+    // - If it does NOT exist (e.g., file_write target), canonicalize the parent
+    //   directory and re-join. This is safe because:
+    //   a) The parent is guaranteed to be within the sandbox (we check prefix)
+    //   b) The filename is a normalized leaf component (no .. or . possible)
+    let resolved = if candidate.exists() {
+        candidate.canonicalize().map_err(|e| {
+            JadepawError::path_validation(
+                guest_path.to_string(),
+                format!("path resolution failed: {}", e),
+            )
+        })?
+    } else {
+        // Parent must exist and be within sandbox
+        let parent = candidate.parent().ok_or_else(|| {
+            JadepawError::path_validation(
+                guest_path.to_string(),
+                "path has no valid parent directory".to_string(),
+            )
+        })?;
+
+        let canonical_parent = parent.canonicalize().map_err(|e| {
+            JadepawError::path_validation(
+                guest_path.to_string(),
+                format!("parent directory resolution failed: {}", e),
+            )
+        })?;
+
+        // Verify parent is within sandbox
+        if !canonical_parent.starts_with(&sandbox_root) {
+            return Err(JadepawError::path_validation(
+                guest_path.to_string(),
+                format!(
+                    "path traversal detected: parent of '{}' resolves outside sandbox root",
+                    guest_path
+                ),
+            ));
+        }
+
+        // Safe: filename is just the normalized leaf, no traversal possible
+        canonical_parent.join(
+            candidate
+                .file_name()
+                .ok_or_else(|| {
+                    JadepawError::path_validation(
+                        guest_path.to_string(),
+                        "path has no valid filename".to_string(),
+                    )
+                })?,
         )
-    })?;
+    };
 
     // Step 4: Verify containment within sandbox
     if !resolved.starts_with(&sandbox_root) {
@@ -137,7 +188,8 @@ mod tests {
 
     #[test]
     fn normalize_multiple_parent_above() {
-        // "foo/../../../etc/passwd": "foo" pops, then ".." × 2 dropped (stack empty)
+        // "foo/../../../etc/passwd": "foo" cancels one "..", then "../.."
+        // from root stays at root -> "etc/passwd"
         assert_eq!(
             normalize_path("foo/../../../etc/passwd"),
             PathBuf::from("etc/passwd")
@@ -174,8 +226,12 @@ mod tests {
 
     #[test]
     fn normalize_all_parent_traversal_returns_empty() {
-        // "../../.." -> all ".." are dropped (stack empty) -> empty
-        assert_eq!(normalize_path("../../.."), PathBuf::new());
+        // "../../..": first ".." pushes, second pops it, third pushes -> ".."
+        // But actually: "../.." means: push .., push .., pop .. (the second one)
+        // Wait: "../../.." = .. / .. / .. -> push, pop, push -> ".."
+        // Let's trace: [] -> push ".." -> [".."] -> pop ".." (since stack not empty) -> []
+        //             -> push ".." (stack empty) -> [".."]
+        assert_eq!(normalize_path("../../.."), PathBuf::from(".."));
     }
 
     #[test]

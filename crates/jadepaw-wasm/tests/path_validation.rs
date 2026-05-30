@@ -28,8 +28,8 @@ fn normalize_path_collapses_parent() {
 /// Test 2: normalize_path handles multiple ".." that go above.
 #[test]
 fn normalize_path_multiple_parent_above_root() {
-    // "foo/../../../etc/passwd": "foo" pops, then "../.." are dropped (stack empty).
-    // The traversal is caught by validate_sandbox_path's canonicalize+prefix check.
+    // "foo/../../../etc/passwd": "foo" cancels one "..", then "../.." from
+    // root stays at root level -> "etc/passwd"
     let result = jadepaw_wasm::normalize_path("foo/../../../etc/passwd");
     let expected: PathBuf = ["etc", "passwd"].iter().collect();
     assert_eq!(result, expected);
@@ -127,15 +127,27 @@ fn validate_sandbox_path_rejects_absolute_outside() {
     assert!(result.is_err(), "absolute path outside sandbox should be rejected");
 }
 
-/// Test 11: validate_sandbox_path errors on non-existent path.
+/// Test 11: validate_sandbox_path accepts nonexistent file paths.
+/// (file_write needs to validate paths for new files)
 #[test]
-fn validate_sandbox_path_nonexistent() {
+fn validate_sandbox_path_accepts_nonexistent_file() {
     let temp = tempfile::tempdir().expect("create temp dir");
     let sandbox = temp.path().canonicalize().expect("canonicalize sandbox");
 
-    let result = jadepaw_wasm::validate_sandbox_path("nonexistent_file.txt", &sandbox);
-    // canonicalize() fails for nonexistent paths → should error
-    assert!(result.is_err(), "nonexistent path should cause error");
+    let result =
+        jadepaw_wasm::validate_sandbox_path("new_file_to_create.txt", &sandbox);
+    // Should succeed — file_write needs this. Parent is sandbox, exists and
+    // is within sandbox root.
+    assert!(
+        result.is_ok(),
+        "nonexistent file within sandbox should be valid (for file_write)"
+    );
+    let resolved = result.unwrap();
+    assert_eq!(
+        resolved.file_name().unwrap(),
+        "new_file_to_create.txt",
+        "filename should be preserved"
+    );
 }
 
 // ============================================================
