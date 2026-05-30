@@ -8,7 +8,7 @@
 ## Phases
 
 - [x] **Phase 1: Project Foundation** — Workspace scaffold, crate structure, build system, CI (completed 2026-05-28)
-- [ ] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation
+- [x] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation (completed 2026-05-30)
 - [ ] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards
 - [ ] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools
 - [ ] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence
@@ -53,7 +53,7 @@ Plans:
   4. A guest attempting to use a tool not in its capability whitelist (e.g., `http_request` when only `file_read` is granted) is rejected with a permission error before any side effects occur
   5. Running 1,000 concurrent isolated sessions does not cause memory exhaustion (verified by stress test: each session stays within its 64MB cap)
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 **Wave 1**
 
@@ -65,7 +65,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+- [x] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 ### Phase 3: Agent Runtime
 
@@ -86,7 +86,7 @@ Plans:
 Plans:
 
 - [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
+- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 **UI hint:** yes
@@ -108,7 +108,7 @@ Plans:
 
 Plans:
 
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
+- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
@@ -228,7 +228,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
-| 2. Wasm Isolation Core | 2/3 | In Progress|  |
+| 2. Wasm Isolation Core | 3/3 | Complete   | 2026-05-30 |
 | 3. Agent Runtime | 0/? | Not started | — |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
