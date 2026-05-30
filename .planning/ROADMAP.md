@@ -53,7 +53,7 @@ Plans:
   4. A guest attempting to use a tool not in its capability whitelist (e.g., `http_request` when only `file_read` is granted) is rejected with a permission error before any side effects occur
   5. Running 1,000 concurrent isolated sessions does not cause memory exhaustion (verified by stress test: each session stays within its 64MB cap)
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 Plans:
 **Wave 1**
 
@@ -61,7 +61,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
+- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -85,7 +85,7 @@ Plans:
 
 Plans:
 
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
+- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
@@ -228,7 +228,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
-| 2. Wasm Isolation Core | 1/3 | In Progress|  |
+| 2. Wasm Isolation Core | 2/3 | In Progress|  |
 | 3. Agent Runtime | 0/? | Not started | — |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
