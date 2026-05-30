@@ -39,6 +39,13 @@ use std::path::{Path, PathBuf};
 /// // assert_eq!(normalize_path("foo/../../../etc/passwd"), PathBuf::from("../etc/passwd"));
 /// ```
 pub fn normalize_path(path: &str) -> PathBuf {
+    // Guard against excessive path lengths that could cause memory pressure (WR-03)
+    const MAX_PATH_LEN: usize = 4096;
+    if path.len() > MAX_PATH_LEN {
+        // Return a sentinel that will fail subsequent validation
+        return PathBuf::from("..");
+    }
+
     let mut components: Vec<&str> = Vec::new();
 
     for component in path.trim_start_matches('/').split('/') {
