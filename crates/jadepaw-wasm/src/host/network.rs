@@ -62,9 +62,10 @@ pub fn http_request_host_fn(
         let mem_data = memory.data(&caller);
         let mem_size = memory.data_size(&caller);
 
-        // Bounds-check and read URL (T-02-09)
+        // Bounds-check and read URL (T-02-09, WR-01: use checked_add to prevent overflow)
         let url_start = url_ptr as usize;
-        let url_end = (url_ptr + url_len) as usize;
+        let url_len_usize = url_len as usize;
+        let url_end = url_start.checked_add(url_len_usize).unwrap_or(usize::MAX);
         if url_end > mem_size {
             warn!(%session_id, "http_request: URL pointer out of bounds");
             return -1;
@@ -97,7 +98,8 @@ pub fn http_request_host_fn(
         let _all_valid = {
             let check = |ptr: i32, len: i32, name: &str| -> bool {
                 let _start = ptr as usize;
-                let end = (ptr + len) as usize;
+                let len_usize = len as usize;
+                let end = _start.checked_add(len_usize).unwrap_or(usize::MAX);
                 if end > mem_size {
                     warn!(%session_id, "http_request: {} pointer out of bounds", name);
                     false

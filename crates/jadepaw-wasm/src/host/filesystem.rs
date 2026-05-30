@@ -60,9 +60,10 @@ pub fn file_read_host_fn(
         let mem_data = memory.data(&caller);
         let mem_size = memory.data_size(&caller);
 
-        // Step 2: Bounds-check path pointer
+        // Step 2: Bounds-check path pointer (WR-01: use checked_add to prevent overflow)
         let path_start = path_ptr as usize;
-        let path_end = (path_ptr + path_len) as usize;
+        let path_len_usize = path_len as usize;
+        let path_end = path_start.checked_add(path_len_usize).unwrap_or(usize::MAX);
         if path_end > mem_size {
             warn!(%session_id, "file_read: path pointer out of bounds (start={}, len={})", path_ptr, path_len);
             return -1;
@@ -161,9 +162,10 @@ pub fn file_write_host_fn(
         let mem_data = memory.data(&caller);
         let mem_size = memory.data_size(&caller);
 
-        // Step 2: Bounds-check path pointer
+        // Step 2: Bounds-check path pointer (WR-01: use checked_add to prevent overflow)
         let path_start = path_ptr as usize;
-        let path_end = (path_ptr + path_len) as usize;
+        let path_len_usize = path_len as usize;
+        let path_end = path_start.checked_add(path_len_usize).unwrap_or(usize::MAX);
         if path_end > mem_size {
             warn!(%session_id, "file_write: path pointer out of bounds");
             return -1;
@@ -176,9 +178,10 @@ pub fn file_write_host_fn(
             }
         };
 
-        // Bounds-check data pointer
+        // Bounds-check data pointer (WR-01: use checked_add to prevent overflow)
         let data_start = data_ptr as usize;
-        let data_end = (data_ptr + data_len) as usize;
+        let data_len_usize = data_len as usize;
+        let data_end = data_start.checked_add(data_len_usize).unwrap_or(usize::MAX);
         if data_end > mem_size {
             warn!(%session_id, "file_write: data pointer out of bounds");
             return -1;

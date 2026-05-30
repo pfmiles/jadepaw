@@ -51,9 +51,10 @@ pub fn log_message_host_fn(
         let mem_data = memory.data(&caller);
         let mem_size = memory.data_size(&caller);
 
-        // Bounds-check level string
+        // Bounds-check level string (WR-01: use checked_add to prevent overflow)
         let level_start = level_ptr as usize;
-        let level_end = (level_ptr + level_len) as usize;
+        let level_len_usize = level_len as usize;
+        let level_end = level_start.checked_add(level_len_usize).unwrap_or(usize::MAX);
         if level_end > mem_size {
             tracing::warn!(
                 %session_id,
@@ -70,9 +71,10 @@ pub fn log_message_host_fn(
             }
         };
 
-        // Bounds-check message string
+        // Bounds-check message string (WR-01: use checked_add to prevent overflow)
         let msg_start = msg_ptr as usize;
-        let msg_end = (msg_ptr + msg_len) as usize;
+        let msg_len_usize = msg_len as usize;
+        let msg_end = msg_start.checked_add(msg_len_usize).unwrap_or(usize::MAX);
         if msg_end > mem_size {
             tracing::warn!(
                 %session_id,
