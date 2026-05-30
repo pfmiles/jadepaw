@@ -7,16 +7,15 @@
 //! # Design (D-09)
 //!
 //! - Epoch ticker runs at ~1ms intervals in a background thread
-//! - Uses `EngineWeak` to detect when the Engine has been dropped (ticker exits)
-//! - Uses `Engine` (cloned) for `increment_epoch()` which is signal-safe
+//! - Uses `EngineWeak` for both liveness detection and `increment_epoch()`
 //! - Returns an `EpochTickerGuard` that joins the thread on Drop
 //!
 //! # Safety (T-02-06)
 //!
-//! The ticker exits when `EngineWeak::upgrade()` returns `None`, meaning
-//! the Engine has been dropped. The cloned `Engine` for `increment_epoch()`
-//! is dropped inside the thread on exit, so it does not keep the Engine alive
-//! past the main Engine's lifetime.
+//! The ticker upgrades `EngineWeak::upgrade()` on each iteration. If the
+//! Engine has been dropped, `upgrade()` returns `None` and the thread exits
+//! gracefully. No long-lived `Engine` clone means the thread does not extend
+//! the Engine's lifetime.
 
 use std::sync::mpsc;
 use std::thread;
@@ -62,7 +61,6 @@ impl Drop for EpochTickerGuard {
 /// // ticker is joined when _ticker goes out of scope
 /// ```
 pub fn start_epoch_ticker(engine: &Engine) -> EpochTickerGuard {
-    let engine_clone = engine.clone();
     let engine_weak = engine.weak();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
@@ -74,13 +72,15 @@ pub fn start_epoch_ticker(engine: &Engine) -> EpochTickerGuard {
                 break;
             }
 
-            // Check if the Engine is still alive
-            if engine_weak.upgrade().is_none() {
-                break;
+            // Upgrade the weak reference — if the Engine has been dropped,
+            // upgrade() returns None and we exit gracefully (WR-02).
+            if let Some(engine) = engine_weak.upgrade() {
+                // Signal-safe: atomic increment, no syscalls
+                engine.increment_epoch();
+                // engine dropped here — reference released
+            } else {
+                break; // Engine was dropped, exit
             }
-
-            // Signal-safe: atomic increment, no syscalls
-            engine_clone.increment_epoch();
 
             thread::sleep(tick);
         }
