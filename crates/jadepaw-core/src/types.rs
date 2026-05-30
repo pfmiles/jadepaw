@@ -34,6 +34,12 @@ impl fmt::Display for SessionId {
     }
 }
 
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Unique identifier for a tenant.
 ///
 /// Uses UUID v7 (time-ordered) for database index friendliness.
@@ -61,6 +67,12 @@ impl fmt::Display for TenantId {
     }
 }
 
+impl Default for TenantId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Unique identifier for a tool.
 ///
 /// Uses UUID v7 (time-ordered) for database index friendliness.
@@ -85,5 +97,11 @@ impl Deref for ToolId {
 impl fmt::Display for ToolId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl Default for ToolId {
+    fn default() -> Self {
+        Self::new()
     }
 }
