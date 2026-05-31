@@ -110,7 +110,7 @@ Plans:
 
 - [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+- [x] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 ### Phase 5: Session Memory
 
@@ -130,7 +130,7 @@ Plans:
 Plans:
 
 - [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
+- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 ### Phase 6: Skill System
@@ -151,7 +151,7 @@ Plans:
 
 Plans:
 
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
+- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
 - [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
 - [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 

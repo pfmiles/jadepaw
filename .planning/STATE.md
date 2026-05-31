@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: ready_to_plan
-last_updated: 2026-05-30T09:25:44.664Z
+last_updated: 2026-05-30T15:29:17.132Z
 progress:
   total_phases: 9
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
   completed_plans: 5
-  percent: 11
+  percent: 22
 stopped_at: Phase 02 complete (3/3) — ready to discuss Phase 3
 ---
 
 # STATE: jadepaw
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-05-30
 **Project:** jadepaw — multi-tenant AI Agent runtime platform with WebAssembly isolation
 
 ## Project Reference
@@ -34,15 +34,13 @@ stopped_at: Phase 02 complete (3/3) — ready to discuss Phase 3
 
 ## Current Position
 
-Phase: 02 (wasm-isolation-core) — EXECUTING
-Plan: 1 of 3
-**Phase:** 3
+**Phase:** 3 (agent-runtime)
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** 0/9 phases complete
+**Progress:** 2/9 phases complete
 
 ```
-Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
+Progress: [████░░░░░░░░░░░░░░░░░░] 22%
 ```
 
 ## Performance Metrics
@@ -50,7 +48,7 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
 | Metric | Target | Current |
 |--------|--------|---------|
 | Build time (clean) | < 5 min | — |
-| Cold start latency (Wasm) | < 5ms P99 | — |
+| Cold start latency (Wasm) | < 5ms P99 | ~0-2ms avg (Phase 2 benchmark) |
 | Concurrent instances (single node) | > 10,000 | — |
 | Memory per instance | < 64MB | — |
 | Test coverage | > 80% | — |
@@ -59,7 +57,7 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
 
 ### Decisions Made
 
-- Tech stack: Rust 2024 + wasmtime 38.0 + tokio + axum 0.8.4 (from research)
+- Tech stack: Rust 2024 + wasmtime 45.0 + tokio + axum 0.8.4 (Phase 1, 2 validated)
 - LLM client: async-openai 0.34.0 (multi-provider via `Box<dyn Config>`)
 - Frontend: HTMX 2.0.4 + SSE (no build step)
 - Database: SQLx (SQLite for single-node, PostgreSQL for cluster)
@@ -67,6 +65,11 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
 - Wasm pattern: Store-per-session, InstancePre pool, Fuel+Epoch both ON from Day 1
 - Skill model: Data-driven configuration (not compiled Wasm), SKILL.md format
 - Agent loop: Pure ReAct for v1 (hybrid planning deferred to v2)
+- ResourceLimiter: Delegating chain — InstanceHardLimiter (64MB Err) + TenantQuotaLimiter (budget Ok(false)) — Phase 2
+- HostFunctions trait: async_trait in jadepaw-core, additive-only, capability-gated before I/O — Phase 2
+- Path validation: normalize + canonicalize + sandbox prefix check, TOCTOU window documented — Phase 2
+- InstancePool: Arc<InstancePre> + Store::new + Semaphore + DashMap, lazy instantiation — Phase 2
+- Capability enforcement: Default deny, InstanceCapabilities with can_* checks, jadepaw namespace host fns — Phase 2
 
 ### Pending Decisions
 
@@ -76,13 +79,13 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
 
 ### Open Questions
 
-- Q-001: Hybrid Planning prompt engineering (Phase 2 research)
+- Q-001: Hybrid Planning prompt engineering (Phase 3 research)
 - Anthropic API access path for non-OpenAI-compatible providers
 - Exact session migration protocol for cross-node state transfer (Phase 3)
 
 ### Todos
 
-- [ ] Create Phase 1 plan (`/gsd-plan-phase 1`)
+- [ ] Discuss Phase 3 with `/gsd-discuss-phase 3`
 
 ### Blockers
 
@@ -90,6 +93,6 @@ Progress: [░░░░░░░░░░░░░░░░░░░░] 0%
 
 ## Session Continuity
 
-**Last session:** 2026-05-29T17:51:13.617Z
-**Next action:** Create Phase 1 plan with `/gsd-plan-phase 1`
-**Context to restore:** Project is greenfield. No code written yet. Architecture and requirements fully defined in .planning/ directory.
+**Last session:** 2026-05-30
+**Next action:** Discuss Phase 3 with `/gsd-discuss-phase 3`
+**Context to restore:** Phase 2 (Wasm Isolation Core) complete — EngineFactory, ResourceLimiter chain, host functions with capability enforcement, path validation, InstancePool with Semaphore+DashMap. 3/3 plans done, 64 tests passing, security review passed (0 open threats). Phase 3 (Agent Runtime) ready to plan.
