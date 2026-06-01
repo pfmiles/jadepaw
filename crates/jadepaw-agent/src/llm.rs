@@ -46,9 +46,13 @@ pub const REACT_SYSTEM_PROMPT: &str = r#"You are a capable AI agent. Follow this
 
 Important: Use EXACTLY the format shown above. The THOUGHT section MUST come before ACTION or FINAL ANSWER."#;
 
-/// The parsed next action from an LLM response.
+/// The parsed directive from an LLM response.
+///
+/// This is the LLM-specific parse output type, distinct from
+/// `jadepaw_core::guest_exports::NextAction` which serves as the guest
+/// decision-point interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NextAction {
+pub enum LlmDirective {
     /// The LLM wants to invoke a tool.
     Act {
         /// Tool name.
@@ -153,20 +157,20 @@ pub async fn stream_llm_response(
 ///
 /// This is a minimal parser. It scans the response for recognized directives:
 ///
-/// - `FINAL ANSWER:` prefix -> `NextAction::Finish`
-/// - `ACTION:` prefix -> `NextAction::Act`
-/// - Otherwise -> `NextAction::ContinueThinking`
+/// - `FINAL ANSWER:` prefix -> `LlmDirective::Finish`
+/// - `ACTION:` prefix -> `LlmDirective::Act`
+/// - Otherwise -> `LlmDirective::ContinueThinking`
 ///
 /// The parsing is case-insensitive for the directive prefix. The content after
 /// the prefix is trimmed.
-pub fn parse_next_action(response: &str) -> NextAction {
+pub fn parse_next_action(response: &str) -> LlmDirective {
     let response_upper = response.to_uppercase();
 
     // Check for FINAL ANSWER first (more specific)
     if let Some(pos) = response_upper.find("FINAL ANSWER:") {
         let answer = response[pos + "FINAL ANSWER:".len()..].trim().to_string();
         if !answer.is_empty() {
-            return NextAction::Finish { answer };
+            return LlmDirective::Finish { answer };
         }
     }
 
@@ -180,21 +184,21 @@ pub fn parse_next_action(response: &str) -> NextAction {
             if let Some(close_pos) = args_and_close.rfind(')') {
                 let args = args_and_close[..close_pos].trim().to_string();
                 if !tool.is_empty() {
-                    return NextAction::Act { tool, args };
+                    return LlmDirective::Act { tool, args };
                 }
             }
         }
         // Fallback: treat entire string as tool name with empty args
         let tool = action_str.trim().to_string();
         if !tool.is_empty() {
-            return NextAction::Act {
+            return LlmDirective::Act {
                 tool,
                 args: String::new(),
             };
         }
     }
 
-    NextAction::ContinueThinking
+    LlmDirective::ContinueThinking
 }
 
 #[cfg(test)]
@@ -208,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            NextAction::Finish {
+            LlmDirective::Finish {
                 answer: "The capital of France is Paris.".to_string()
             }
         );
@@ -221,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             result,
-            NextAction::Act {
+            LlmDirective::Act {
                 tool: "get_weather".to_string(),
                 args: "location=\"Paris\", unit=\"celsius\"".to_string(),
             }
@@ -233,7 +237,7 @@ mod tests {
         let result = parse_next_action("THOUGHT: Need to think more.\nACTION: think");
         assert_eq!(
             result,
-            NextAction::Act {
+            LlmDirective::Act {
                 tool: "think".to_string(),
                 args: String::new(),
             }
@@ -245,7 +249,7 @@ mod tests {
         let result = parse_next_action(
             "THOUGHT: I am not sure what tool to use yet. Let me think more carefully.",
         );
-        assert_eq!(result, NextAction::ContinueThinking);
+        assert_eq!(result, LlmDirective::ContinueThinking);
     }
 
     #[test]
@@ -253,7 +257,7 @@ mod tests {
         let result = parse_next_action("thought: reasoning\nfinal answer: Done.");
         assert_eq!(
             result,
-            NextAction::Finish {
+            LlmDirective::Finish {
                 answer: "Done.".to_string()
             }
         );
@@ -262,7 +266,7 @@ mod tests {
     #[test]
     fn parse_empty_action_after_colon_is_continue() {
         let result = parse_next_action("ACTION: ");
-        assert_eq!(result, NextAction::ContinueThinking);
+        assert_eq!(result, LlmDirective::ContinueThinking);
     }
 
     #[test]

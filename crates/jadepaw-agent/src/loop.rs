@@ -19,7 +19,7 @@ use jadepaw_core::ReActStep;
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
 
-use crate::llm::{self, NextAction};
+use crate::llm::{self, LlmDirective};
 
 /// Configuration for a ReAct loop execution.
 #[derive(Clone)]
@@ -96,7 +96,7 @@ pub async fn react_loop(
         let action = llm::parse_next_action(&full_response);
 
         match action {
-            NextAction::Finish { answer } => {
+            LlmDirective::Finish { answer } => {
                 // Emit finished event
                 let finished = ReActStep::Finished {
                     answer: answer.clone(),
@@ -107,7 +107,7 @@ pub async fn react_loop(
                 trace.push(finished);
                 return Ok(trace);
             }
-            NextAction::Act { tool, args } => {
+            LlmDirective::Act { tool, args } => {
                 // Emit action step
                 let action_step = ReActStep::Action {
                     tool: tool.clone(),
@@ -139,7 +139,7 @@ pub async fn react_loop(
                     .into();
                 messages.push(assistant_msg);
             }
-            NextAction::ContinueThinking => {
+            LlmDirective::ContinueThinking => {
                 // Append the response to history and continue
                 let assistant_msg: ChatCompletionRequestMessage =
                     async_openai::types::chat::ChatCompletionRequestAssistantMessage::from(
