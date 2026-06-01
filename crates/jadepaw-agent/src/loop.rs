@@ -13,6 +13,8 @@
 //! - LLM response is parsed for ACTION / FINAL ANSWER directives
 //! - Full LLM response is emitted as a single `ReActStep::Thought` per turn
 
+use std::fmt;
+
 use anyhow::Context;
 use async_openai::{types::chat::ChatCompletionRequestMessage, Client, config::Config};
 use jadepaw_core::ReActStep;
@@ -21,6 +23,67 @@ use tokio::sync::mpsc;
 
 use crate::guard::GuardConfig;
 use crate::llm::{self, LlmDirective};
+
+/// Structured error kind for the ReAct loop.
+///
+/// Used by `run_with_guard` to classify errors without fragile string matching.
+/// Each variant carries enough context for the guard to produce the correct
+/// `AgentTerminationReason`.
+#[derive(Debug)]
+pub(crate) enum LoopErrorKind {
+    /// The iteration limit was exhausted.
+    MaxIterations {
+        /// The current iteration count at termination.
+        iter: u32,
+        /// The configured maximum.
+        max: u32,
+    },
+    /// An LLM call failed (infrastructure error, not a Wasm trap).
+    LlmFailure {
+        /// The turn number on which the failure occurred.
+        turn: u32,
+        /// The underlying error.
+        source: anyhow::Error,
+    },
+    /// The output SSE channel was closed (client disconnected).
+    ChannelClosed {
+        /// The turn number on which the channel was detected closed.
+        turn: u32,
+    },
+}
+
+impl fmt::Display for LoopErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MaxIterations { iter, max } => {
+                write!(
+                    f,
+                    "max iterations ({max}) reached without completion (attempted {iter})"
+                )
+            }
+            Self::LlmFailure { turn, source } => {
+                write!(f, "LLM call failed on turn {turn}: {source}")
+            }
+            Self::ChannelClosed { turn } => {
+                write!(f, "output channel closed on turn {turn}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoopErrorKind {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::LlmFailure { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// Create an `anyhow::Error` from a `LoopErrorKind`.
+fn loop_error(kind: LoopErrorKind) -> anyhow::Error {
+    anyhow::Error::new(kind)
+}
 
 /// Execute the ReAct loop for a single agent session.
 ///
@@ -76,14 +139,20 @@ pub async fn react_loop(
             tx,
         )
         .await
-        .with_context(|| format!("LLM call failed on turn {}", turn))?;
+        .with_context(|| format!("LLM call failed on turn {}", turn))
+            .map_err(|e| {
+                loop_error(LoopErrorKind::LlmFailure {
+                    turn,
+                    source: e,
+                })
+            })?;
 
         // Emit a single Thought event with the complete LLM response
         let thought = ReActStep::Thought {
             content: full_response.clone(),
         };
         if tx.send(thought.clone()).await.is_err() {
-            anyhow::bail!("output channel closed on turn {}", turn);
+            return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
         }
         // Push thought to trace so all branches (Finish, Act, ContinueThinking)
         // preserve the full reasoning context in the structured response.
@@ -99,7 +168,7 @@ pub async fn react_loop(
                     answer: answer.clone(),
                 };
                 if tx.send(finished.clone()).await.is_err() {
-                    anyhow::bail!("output channel closed on turn {}", turn);
+                    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
                 trace.push(finished);
                 return Ok(trace);
@@ -127,7 +196,7 @@ pub async fn react_loop(
                     args: parsed_args,
                 };
                 if tx.send(action_step.clone()).await.is_err() {
-                    anyhow::bail!("output channel closed on turn {}", turn);
+                    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
                 trace.push(action_step);
 
@@ -139,7 +208,7 @@ pub async fn react_loop(
                     ),
                 };
                 if tx.send(observation.clone()).await.is_err() {
-                    anyhow::bail!("output channel closed on turn {}", turn);
+                    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
                 trace.push(observation);
 
@@ -163,8 +232,8 @@ pub async fn react_loop(
         }
     }
 
-    anyhow::bail!(
-        "max iterations ({}) reached without completion",
-        guard_config.max_iterations
-    )
+    return Err(loop_error(LoopErrorKind::MaxIterations {
+        iter: guard_config.max_iterations,
+        max: guard_config.max_iterations,
+    }));
 }

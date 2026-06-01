@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use jadepaw_core::{AgentTerminationReason, JadepawError, ReActStep};
 
+use crate::r#loop::LoopErrorKind;
+
 /// Configuration for termination guards.
 #[derive(Clone)]
 pub struct GuardConfig {
@@ -55,45 +57,42 @@ where
     tokio::select! {
         result = agent_loop() => {
             result.map_err(|e| {
-                let err_msg = e.to_string();
-
-                // Classify the error to select the correct termination reason.
-                // The agent loop uses structured anyhow error messages that
-                // encode the failure mode and turn number.
-
-                // Extract turn number from error message if present
-                let turn = extract_turn_from_error(&err_msg);
-
-                if err_msg.contains("max iterations") {
-                    JadepawError::agent_terminated(
-                        AgentTerminationReason::MaxIterationsReached {
-                            iter: turn,
-                            max: config.max_iterations,
-                        },
-                    )
-                } else if err_msg.contains("LLM call failed") {
-                    // LLM failures are infrastructure errors, not Wasm traps.
-                    // Callers can distinguish transient network errors from
-                    // actual guest sandbox violations for retry/monitoring.
-                    JadepawError::agent_terminated(
-                        AgentTerminationReason::InfrastructureError {
-                            reason: format!("LLM error: {}", err_msg),
-                            turn,
-                        },
-                    )
-                } else if err_msg.contains("output channel closed") {
-                    // Channel closure is a client disconnect, not a trap.
-                    // Map to InfrastructureError so callers know the agent
-                    // didn't crash — the client went away.
-                    JadepawError::agent_terminated(
-                        AgentTerminationReason::InfrastructureError {
-                            reason: format!("client disconnected: {}", err_msg),
-                            turn,
-                        },
-                    )
+                // Classify the error using structured downcast instead of
+                // fragile string matching. The loop uses LoopErrorKind
+                // variants that carry typed context for correct
+                // AgentTerminationReason construction.
+                if let Some(kind) = e.downcast_ref::<LoopErrorKind>() {
+                    match kind {
+                        LoopErrorKind::MaxIterations { iter, max } => {
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::MaxIterationsReached {
+                                    iter: *iter,
+                                    max: *max,
+                                },
+                            )
+                        }
+                        LoopErrorKind::LlmFailure { turn, source: _ } => {
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::InfrastructureError {
+                                    reason: e.to_string(),
+                                    turn: *turn,
+                                },
+                            )
+                        }
+                        LoopErrorKind::ChannelClosed { turn } => {
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::InfrastructureError {
+                                    reason: format!("client disconnected: {}", e),
+                                    turn: *turn,
+                                },
+                            )
+                        }
+                    }
                 } else {
                     // Fallback: unknown errors are classified as traps with the
-                    // original error message preserved for debugging
+                    // original error message preserved for debugging.
+                    let err_msg = e.to_string();
+                    let turn = extract_turn_from_error(&err_msg);
                     JadepawError::agent_terminated(
                         AgentTerminationReason::WasmTrap {
                             reason: err_msg,
