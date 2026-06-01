@@ -1,9 +1,9 @@
 //! ReAct loop orchestrator.
 //!
 //! Implements the think-act-observe cycle (D-01). Runs on the host side.
-//! Each turn resets the Wasm fuel budget and streams LLM tokens in real time
-//! via an mpsc channel. The loop produces a complete execution trace of
-//! `ReActStep` items.
+//! Each turn resets the Wasm fuel budget, accumulates the full LLM response,
+//! and emits a single `ReActStep::Thought` event per turn via an mpsc channel.
+//! The loop produces a complete execution trace of `ReActStep` items.
 //!
 //! # Design (D-01, D-10, D-07)
 //!
@@ -11,7 +11,7 @@
 //! - Per-turn fuel reset at 1_000_000 units (Pitfall 3 prevention)
 //! - Uses real async-openai `Client<Box<dyn Config>>` with streaming
 //! - LLM response is parsed for ACTION / FINAL ANSWER directives
-//! - Each token is emitted as `ReActStep::Thought` via the mpsc channel
+//! - Full LLM response is emitted as a single `ReActStep::Thought` per turn
 
 use anyhow::Context;
 use async_openai::{types::chat::ChatCompletionRequestMessage, Client, config::Config};
@@ -48,7 +48,7 @@ impl Default for LoopConfig {
 ///    - `Act` -> emits `ReActStep::Action`, then a placeholder `Observation`
 ///      (full tool execution is Phase 4)
 ///    - `ContinueThinking` -> appends the response to history, continues
-/// 5. All tokens are streamed as `ReActStep::Thought` events via `tx`
+/// 5. The full LLM response is emitted as a single `ReActStep::Thought` event via `tx`
 ///
 /// # Errors
 ///
@@ -82,7 +82,7 @@ pub async fn react_loop(
                 anyhow::anyhow!("failed to set fuel on session store: {}", e)
             })?;
 
-        // Stream LLM response — tokens are emitted via tx in real time
+        // Stream LLM response — accumulates full text without per-token events
         let full_response = llm::stream_llm_response(
             llm_client,
             messages.clone(),
@@ -91,6 +91,14 @@ pub async fn react_loop(
         )
         .await
         .with_context(|| format!("LLM call failed on turn {}", turn))?;
+
+        // Emit a single Thought event with the complete LLM response
+        let thought = ReActStep::Thought {
+            content: full_response.clone(),
+        };
+        if tx.send(thought).await.is_err() {
+            anyhow::bail!("output channel closed on turn {}", turn);
+        }
 
         // Parse the response for next action
         let action = llm::parse_next_action(&full_response);

@@ -101,12 +101,17 @@ pub fn build_initial_messages(
     vec![system_msg, user_msg]
 }
 
-/// Stream an LLM chat completion response through an mpsc channel.
+/// Stream an LLM chat completion response and accumulate the full text.
 ///
 /// Creates a streaming chat completion request, iterates over the token
-/// stream, and emits each token as a `ReActStep::Thought` event via the
-/// provided `mpsc::Sender`. Returns the full concatenated response text
-/// once the stream is exhausted.
+/// stream, and accumulates tokens into a single response string. Per-token
+/// streaming to SSE consumers is deferred to the caller (`react_loop`),
+/// which emits a single `ReActStep::Thought` event with the complete
+/// response after parsing.
+///
+/// The `tx` parameter is retained as a passthrough to detect channel close
+/// (graceful early termination if the SSE consumer disconnects). It is NOT
+/// used to emit per-token events.
 ///
 /// # Errors
 ///
@@ -139,16 +144,13 @@ pub async fn stream_llm_response(
             Ok(response) => {
                 for choice in response.choices {
                     if let Some(content) = choice.delta.content {
-                        // Emit token as a Thought step for real-time streaming
-                        let step = ReActStep::Thought {
-                            content: content.clone(),
-                        };
-                        // If the receiver is gone, stop streaming gracefully
-                        if tx.send(step).await.is_err() {
-                            return Ok(full_content);
-                        }
                         full_content.push_str(&content);
                     }
+                }
+                // Check if the receiver is still alive (SSE consumer connected).
+                // If the channel is closed, stop streaming gracefully.
+                if tx.is_closed() {
+                    return Ok(full_content);
                 }
             }
             Err(e) => {
