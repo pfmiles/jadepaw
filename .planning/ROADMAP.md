@@ -81,13 +81,16 @@ Plans:
   4. An agent that takes longer than the wall-clock timeout (configurable, default 5 minutes) is terminated with a timeout error message
   5. The agent can be invoked programmatically (API call or test harness) and returns structured results including the final answer and execution trace
 
-**Plans:** 3 plans
+**Plans:** 2 plans
 
 Plans:
+**Wave 1**
 
-- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [x] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
+- [ ] 03-01-PLAN.md — Core types (AgentRequest, AgentResponse, ReActStep, AgentTerminationReason, GuestExports trait), ReAct loop skeleton, termination guards (tokio::select!), run_agent() entry point, unit tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-PLAN.md — async-openai LLM integration (chat-completion feature, streaming), SSE event relay (create_sse_channel), loop wired to real Client<Box<dyn Config>>, streaming integration tests
 
 **UI hint:** yes
 
@@ -106,12 +109,6 @@ Plans:
 
 **Plans:** 3 plans
 
-Plans:
-
-- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [x] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
-
 ### Phase 5: Session Memory
 
 **Goal:** Conversations persist within a session with automatic context window management, and sessions can be paused, persisted, and resumed later.
@@ -126,12 +123,6 @@ Plans:
   4. Session data is stored in SQLite (single-file, zero-config), and the database can be backed up by copying the file
 
 **Plans:** 3 plans
-
-Plans:
-
-- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [x] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 ### Phase 6: Skill System
 
@@ -149,12 +140,6 @@ Plans:
 
 **Plans:** 3 plans
 
-Plans:
-
-- [x] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
-
 ### Phase 7: Web Chat UI
 
 **Goal:** Users open a browser to `localhost:PORT` and have a full streaming chat conversation with their agent through a clean web interface.
@@ -170,12 +155,6 @@ Plans:
   5. The chat interface works identically whether jadepaw is running on localhost or deployed to a remote server (same UI code)
 
 **Plans:** 3 plans
-
-Plans:
-
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
 
 **UI hint:** yes
 
@@ -194,12 +173,6 @@ Plans:
 
 **Plans:** 3 plans
 
-Plans:
-
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
-
 **UI hint:** yes
 
 ### Phase 9: Observability
@@ -217,19 +190,13 @@ Plans:
 
 **Plans:** 3 plans
 
-Plans:
-
-- [ ] 02-01-PLAN.md — Engine factory, core types (HostFunctions trait, InstanceCapabilities), delegating chain ResourceLimiter, SessionState, epoch ticker
-- [ ] 02-02-PLAN.md — Host functions (log_message, file_read, file_write) with capability enforcement, path validation, capability check methods on SessionState
-- [ ] 02-03-PLAN.md — Instance pool with lazy instantiation, Semaphore concurrency bound, DashMap session tracking, stress test (1,000 concurrent sessions)
-
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
-| 3. Agent Runtime | 0/? | Not started | — |
+| 3. Agent Runtime | 0/2 | Planned | — |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
