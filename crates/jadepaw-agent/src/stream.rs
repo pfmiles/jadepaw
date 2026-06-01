@@ -60,7 +60,19 @@ pub fn create_sse_channel(
                     "tool": tool,
                     "args": args,
                 }))
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        tool = %tool,
+                        error = %e,
+                        "failed to serialize action SSE event data"
+                    );
+                    serde_json::json!({
+                        "tool": tool,
+                        "error": "failed to serialize tool args",
+                        "serialization_error": e.to_string(),
+                    })
+                    .to_string()
+                });
                 Event::default().event("action").data(payload)
             }
             ReActStep::Observation { result } => {
@@ -71,14 +83,37 @@ pub fn create_sse_channel(
                     "message": message,
                     "turn": turn,
                 }))
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        turn = turn,
+                        serialization_error = %e,
+                        "failed to serialize error SSE event data"
+                    );
+                    serde_json::json!({
+                        "message": "failed to serialize error event data",
+                        "turn": turn,
+                        "serialization_error": e.to_string(),
+                    })
+                    .to_string()
+                });
                 Event::default().event("error").data(payload)
             }
             ReActStep::Finished { answer } => {
                 let payload = serde_json::to_string(&serde_json::json!({
                     "answer": answer,
                 }))
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "failed to serialize done SSE event data"
+                    );
+                    serde_json::json!({
+                        "answer": "",
+                        "error": "failed to serialize final answer",
+                        "serialization_error": e.to_string(),
+                    })
+                    .to_string()
+                });
                 Event::default().event("done").data(payload)
             }
         };
