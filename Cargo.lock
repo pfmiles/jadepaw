@@ -1220,6 +1220,7 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
+ "axum",
  "futures",
  "jadepaw-bus",
  "jadepaw-core",

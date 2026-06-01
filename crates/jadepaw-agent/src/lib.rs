@@ -1,17 +1,16 @@
 //! # jadepaw-agent
 //!
-//! Agent runtime: hybrid planning loop (coarse-grained plan + ReAct execution),
-//! tool management, memory management, and LLM client integration.
+//! Agent runtime: ReAct execution loop with real-time LLM streaming via
+//! async-openai. SSE events are relayed through a tokio mpsc channel for
+//! Phase 7 HTMX frontend integration.
 //!
 //! ## What lives here
 //!
 //! - Top-level session orchestrator managing loop lifecycle
-//! - LLM-driven plan generation with deviation-triggered re-planning
 //! - ReAct step executor: think -> tool -> observe -> decide
-//! - Tool registry with MCP-compatible protocol adapter
-//! - Short-term memory (window compression) and long-term memory (vector DB)
-//! - `LlmClient` trait: unified LLM backend abstraction for provider decoupling
-//!   (OpenAI-compatible via async-openai, Anthropic via native API — Phase 3)
+//! - LLM integration via async-openai with streaming token relay
+//! - SSE event mapping per D-14 (thought, action, observation, error, done)
+//! - Termination protection (iteration limit, wall-clock timeout)
 //!
 //! ## What does NOT live here
 //!
@@ -19,26 +18,38 @@
 //! - HTTP/WS transport or session affinity (see jadepaw-gateway)
 //! - Core data types (see jadepaw-core)
 //! - Skill format or compilation (see jadepaw-skill)
+//! - Tool registry with MCP-compatible protocol adapter (Phase 4)
 
 pub mod guard;
+pub mod llm;
 pub mod r#loop;
+pub mod stream;
 
+use std::convert::Infallible;
 use std::env::temp_dir;
 use std::sync::Arc;
 
+use async_openai::Client;
+use async_openai::config::Config;
+use axum::response::sse::Event;
+use futures::stream::Stream;
 use jadepaw_core::{AgentRequest, AgentResponse, JadepawError, ReActStep};
 use jadepaw_wasm::{InstancePool, SessionState};
-use tokio::sync::mpsc;
 
-/// Run an agent session from request to response.
+/// Run an agent session from request to response with real-time SSE streaming.
 ///
 /// This is the primary entry point (D-13). It composes:
 /// 1. Session acquisition from the instance pool
-/// 2. The ReAct loop (`react_loop`)
-/// 3. Termination protection (`run_with_guard`)
+/// 2. SSE channel creation via `stream::create_sse_channel()`
+/// 3. The ReAct loop (`react_loop`) with real async-openai LLM calls
+/// 4. Termination protection (`run_with_guard`)
 ///
-/// The result is a structured `AgentResponse` with the session identifier,
-/// final answer, and complete execution trace.
+/// The result is a tuple of `(AgentResponse, SSE stream)`. The `AgentResponse`
+/// contains the structured response (session_id, final_answer, trace), and the
+/// SSE stream carries real-time token events that Phase 7's HTMX frontend can
+/// consume directly.
+///
+/// The system prompt defaults to `llm::REACT_SYSTEM_PROMPT` unless overridden.
 ///
 /// # Errors
 ///
@@ -49,9 +60,13 @@ use tokio::sync::mpsc;
 pub async fn run_agent(
     req: AgentRequest,
     pool: Arc<InstancePool>,
-    llm: &dyn self::LlmProvider,
-) -> core::result::Result<AgentResponse, JadepawError> {
+    llm_client: Client<Box<dyn Config>>,
+    model: &str,
+) -> core::result::Result<(AgentResponse, impl Stream<Item = core::result::Result<Event, Infallible>>), JadepawError>
+{
     let session_id = req.session_id;
+    let user_message = req.user_message.clone();
+    let context = req.context.as_deref();
 
     // Create session state with a temporary sandbox root
     let state = SessionState::with_defaults(temp_dir());
@@ -69,17 +84,30 @@ pub async fn run_agent(
             )
         })?;
 
-    // Create output channel for real-time step streaming
-    let (tx, _rx) = mpsc::channel::<ReActStep>(256);
+    // Create SSE channel for real-time step streaming
+    let (tx, sse_stream) = stream::create_sse_channel();
 
     let loop_config = r#loop::LoopConfig::default();
     let guard_config = guard::GuardConfig::default();
+    let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
     // Run the agent loop under termination protection
     let trace = guard::run_with_guard(guard_config, || {
-        r#loop::react_loop(&loop_config, &mut handle, llm, &tx)
+        r#loop::react_loop(
+            &loop_config,
+            &mut handle,
+            &llm_client,
+            model,
+            system_prompt,
+            &user_message,
+            context,
+            &tx,
+        )
     })
     .await?;
+
+    // Drop the sender so the SSE stream knows we're done
+    drop(tx);
 
     // Extract the final answer from the trace
     let final_answer = trace
@@ -91,13 +119,20 @@ pub async fn run_agent(
         })
         .unwrap_or_default();
 
-    Ok(AgentResponse {
-        session_id,
-        final_answer,
-        trace,
-    })
+    Ok((
+        AgentResponse {
+            session_id,
+            final_answer,
+            trace,
+        },
+        sse_stream,
+    ))
 }
 
 // Re-export key public types
 pub use guard::{run_with_guard, GuardConfig};
-pub use r#loop::{react_loop, LlmProvider, LoopConfig};
+pub use llm::{
+    REACT_SYSTEM_PROMPT, build_initial_messages, parse_next_action, stream_llm_response,
+};
+pub use r#loop::{react_loop, LoopConfig};
+pub use stream::create_sse_channel;

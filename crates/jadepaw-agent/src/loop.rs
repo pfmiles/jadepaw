@@ -1,62 +1,54 @@
 //! ReAct loop orchestrator.
 //!
 //! Implements the think-act-observe cycle (D-01). Runs on the host side.
-//! Each turn resets the Wasm fuel budget and polls the LLM for the next
-//! step. The loop produces a complete execution trace of `ReActStep` items
-//! and streams them in real time via an mpsc channel.
+//! Each turn resets the Wasm fuel budget and streams LLM tokens in real time
+//! via an mpsc channel. The loop produces a complete execution trace of
+//! `ReActStep` items.
 //!
-//! # Design (D-01, D-10)
+//! # Design (D-01, D-10, D-07)
 //!
 //! - ReAct loop skeleton: think -> act -> observe -> repeat
 //! - Per-turn fuel reset at 1_000_000 units (Pitfall 3 prevention)
-//! - `LlmProvider` trait allows mocking the LLM for testing
-//! - Plan 02 replaces the mocked LLM with real async-openai streaming
+//! - Uses real async-openai `Client<Box<dyn Config>>` with streaming
+//! - LLM response is parsed for ACTION / FINAL ANSWER directives
+//! - Each token is emitted as `ReActStep::Thought` via the mpsc channel
 
 use anyhow::Context;
-use async_trait::async_trait;
+use async_openai::{types::chat::ChatCompletionRequestMessage, Client, config::Config};
 use jadepaw_core::ReActStep;
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
+
+use crate::llm::{self, NextAction};
 
 /// Configuration for a ReAct loop execution.
 #[derive(Clone)]
 pub struct LoopConfig {
     /// Maximum number of think-act-observe iterations.
     pub max_iterations: u32,
-    /// The LLM model identifier (e.g., "gpt-4o").
-    pub model: String,
 }
 
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
             max_iterations: 20,
-            model: "gpt-4o".to_string(),
         }
     }
 }
 
-/// Mockable LLM provider interface.
-///
-/// Provides a single `chat` method that takes message history and returns
-/// a response string. Used by the ReAct loop to obtain the next step. Plan 02
-/// replaces this with real async-openai streaming integration.
-#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    /// Send messages to the LLM and receive a response string.
-    ///
-    /// `messages` are the conversation history. The implementation may
-    /// format them as system/user/assistant messages internally.
-    async fn chat(&self, messages: &[String]) -> anyhow::Result<String>;
-}
-
 /// Execute the ReAct loop for a single agent session.
 ///
-/// Orchestrates think-act-observe cycles. Each turn:
-/// 1. Resets the Wasm fuel budget on the session store
-/// 2. Calls the LLM with the message history to get a response
-/// 3. Emits a `Thought` step via the channel and pushes it to the trace
-/// 4. Emits a `Finished` step via the channel, pushes it to the trace, and breaks
+/// Orchestrates think-act-observe cycles using real async-openai streaming.
+/// Each turn:
+/// 1. Resets the Wasm fuel budget on the session store (D-10 Pitfall 3)
+/// 2. Calls `llm::stream_llm_response()` with the current message history
+/// 3. Parses the LLM response with `llm::parse_next_action()`
+/// 4. Based on the next action:
+///    - `Finish` -> emits `ReActStep::Finished`, breaks the loop
+///    - `Act` -> emits `ReActStep::Action`, then a placeholder `Observation`
+///      (full tool execution is Phase 4)
+///    - `ContinueThinking` -> appends the response to history, continues
+/// 5. All tokens are streamed as `ReActStep::Thought` events via `tx`
 ///
 /// # Errors
 ///
@@ -64,61 +56,103 @@ pub trait LlmProvider: Send + Sync {
 /// - The LLM call fails
 /// - The session store fuel reset fails
 /// - All iterations are exhausted without a finish signal
+/// - The output channel is closed
 pub async fn react_loop(
     config: &LoopConfig,
     session: &mut SessionHandle,
-    llm: &dyn LlmProvider,
+    llm_client: &Client<Box<dyn Config>>,
+    model: &str,
+    system_prompt: &str,
+    user_message: &str,
+    context: Option<&str>,
     tx: &mpsc::Sender<ReActStep>,
 ) -> anyhow::Result<Vec<ReActStep>> {
     let mut trace: Vec<ReActStep> = Vec::new();
-    let mut history: Vec<String> = Vec::new();
 
-    // Initialize history with a simple prompt to elicit a response
-    history.push("You are a helpful AI assistant. Respond with your thoughts and a final answer.".to_string());
+    // Build initial messages
+    let mut messages: Vec<ChatCompletionRequestMessage> =
+        llm::build_initial_messages(system_prompt, user_message, context);
 
     for turn in 0..config.max_iterations {
         // Per-turn fuel reset (D-10 Pitfall 3)
         session
             .store_mut()
             .set_fuel(1_000_000)
-            .map_err(|e| anyhow::anyhow!("failed to set fuel on session store: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!("failed to set fuel on session store: {}", e)
+            })?;
 
-        // Call LLM for current turn
-        let response = llm
-            .chat(&history)
-            .await
-            .with_context(|| format!("LLM call failed on turn {}", turn))?;
-
-        // Emit and record Thought step
-        let thought = ReActStep::Thought {
-            content: response.clone(),
-        };
-        if tx.send(thought.clone()).await.is_err() {
-            // Receiver dropped — caller is no longer listening, stop gracefully
-            anyhow::bail!("output channel closed on turn {}", turn);
-        }
-        trace.push(thought);
-
-        // Emit and record Finished step with the LLM's response as answer
-        let finished = ReActStep::Finished {
-            answer: response,
-        };
-        if tx.send(finished.clone()).await.is_err() {
-            anyhow::bail!("output channel closed on turn {}", turn);
-        }
-        trace.push(finished);
-
-        break;
-    }
-
-    // If we exhausted all iterations without breaking, signal termination
-    if trace.len() >= 2 && matches!(trace.last(), Some(ReActStep::Finished { .. })) {
-        // Normal completion — trace ends with Finished
-        Ok(trace)
-    } else {
-        anyhow::bail!(
-            "max iterations ({}) reached without completion",
-            config.max_iterations
+        // Stream LLM response — tokens are emitted via tx in real time
+        let full_response = llm::stream_llm_response(
+            llm_client,
+            messages.clone(),
+            model,
+            tx,
         )
+        .await
+        .with_context(|| format!("LLM call failed on turn {}", turn))?;
+
+        // Parse the response for next action
+        let action = llm::parse_next_action(&full_response);
+
+        match action {
+            NextAction::Finish { answer } => {
+                // Emit finished event
+                let finished = ReActStep::Finished {
+                    answer: answer.clone(),
+                };
+                if tx.send(finished.clone()).await.is_err() {
+                    anyhow::bail!("output channel closed on turn {}", turn);
+                }
+                trace.push(finished);
+                return Ok(trace);
+            }
+            NextAction::Act { tool, args } => {
+                // Emit action step
+                let action_step = ReActStep::Action {
+                    tool: tool.clone(),
+                    args: serde_json::from_str(&args)
+                        .unwrap_or(serde_json::Value::String(args.clone())),
+                };
+                if tx.send(action_step.clone()).await.is_err() {
+                    anyhow::bail!("output channel closed on turn {}", turn);
+                }
+                trace.push(action_step);
+
+                // Emit placeholder observation (full tool execution in Phase 4)
+                let observation = ReActStep::Observation {
+                    result: format!(
+                        "Tool '{}' called with args '{}'. Full tool execution is coming in Phase 4.",
+                        tool, args
+                    ),
+                };
+                if tx.send(observation.clone()).await.is_err() {
+                    anyhow::bail!("output channel closed on turn {}", turn);
+                }
+                trace.push(observation);
+
+                // Append the assistant's response to message history
+                let assistant_msg: ChatCompletionRequestMessage =
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage::from(
+                        full_response,
+                    )
+                    .into();
+                messages.push(assistant_msg);
+            }
+            NextAction::ContinueThinking => {
+                // Append the response to history and continue
+                let assistant_msg: ChatCompletionRequestMessage =
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage::from(
+                        full_response,
+                    )
+                    .into();
+                messages.push(assistant_msg);
+            }
+        }
     }
+
+    anyhow::bail!(
+        "max iterations ({}) reached without completion",
+        config.max_iterations
+    )
 }
