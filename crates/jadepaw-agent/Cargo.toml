@@ -10,6 +10,8 @@ jadepaw-wasm = { path = "../jadepaw-wasm" }
 jadepaw-bus = { path = "../jadepaw-bus" }
 async-openai = { workspace = true }
 tokio = { workspace = true }
+anyhow = "1.0"
+async-trait = "0.1"
 
 [features]
 default = ["single-node"]
