@@ -77,9 +77,9 @@ async fn run_with_guard_timeout_value_propagated() {
     match result.unwrap_err() {
         jadepaw_core::JadepawError::AgentTerminated { reason } => {
             match reason {
-                AgentTerminationReason::WallClockTimeout { max_secs, .. } => {
-                    // max_secs should be 0 since 10ms < 1s (integer truncation)
-                    assert_eq!(max_secs, 0);
+                AgentTerminationReason::WallClockTimeout { max_ms, .. } => {
+                    // max_ms preserves millisecond precision (10ms = 10ms)
+                    assert_eq!(max_ms, 10);
                 }
                 other => panic!("expected WallClockTimeout, got: {other:?}"),
             }

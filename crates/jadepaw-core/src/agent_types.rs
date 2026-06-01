@@ -111,10 +111,10 @@ pub enum AgentTerminationReason {
     },
     /// The agent exceeded the wall-clock time limit.
     WallClockTimeout {
-        /// The elapsed time in seconds.
-        elapsed_secs: u64,
-        /// The configured maximum in seconds.
-        max_secs: u64,
+        /// The elapsed time in milliseconds.
+        elapsed_ms: u64,
+        /// The configured maximum in milliseconds.
+        max_ms: u64,
     },
     /// The Wasm guest trapped during execution.
     WasmTrap {
@@ -146,11 +146,12 @@ impl fmt::Display for AgentTerminationReason {
                     iter, max
                 )
             }
-            Self::WallClockTimeout { elapsed_secs, max_secs } => {
+            Self::WallClockTimeout { elapsed_ms, max_ms } => {
                 write!(
                     f,
-                    "agent timed out after {} seconds (limit: {} seconds)",
-                    elapsed_secs, max_secs
+                    "agent timed out after {:.1}s (limit: {:.1}s)",
+                    *elapsed_ms as f64 / 1000.0,
+                    *max_ms as f64 / 1000.0
                 )
             }
             Self::WasmTrap { reason, turn } => {
