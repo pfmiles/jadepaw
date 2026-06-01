@@ -1230,6 +1230,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tracing",
  "wat",
 ]
 
