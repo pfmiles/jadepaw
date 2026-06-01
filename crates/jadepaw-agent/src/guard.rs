@@ -55,14 +55,49 @@ where
     tokio::select! {
         result = agent_loop() => {
             result.map_err(|e| {
-                // Map anyhow errors from the loop to WasmTrap termination reasons.
-                // In Plan 02, we'll add finer-grained error classification here.
-                JadepawError::agent_terminated(
-                    AgentTerminationReason::WasmTrap {
-                        reason: e.to_string(),
-                        turn: 0, // approximate — loop-internal errors don't expose exact turn
-                    },
-                )
+                let err_msg = e.to_string();
+
+                // Classify the error to select the correct termination reason.
+                // The agent loop uses structured anyhow error messages that
+                // encode the failure mode and turn number.
+
+                // Extract turn number from error message if present
+                let turn = extract_turn_from_error(&err_msg);
+
+                if err_msg.contains("max iterations") {
+                    JadepawError::agent_terminated(
+                        AgentTerminationReason::MaxIterationsReached {
+                            iter: turn,
+                            max: config.max_iterations,
+                        },
+                    )
+                } else if err_msg.contains("LLM call failed") {
+                    // LLM failures are not Wasm traps — surface as a WasmTrap
+                    // with the specific error context preserved in the reason.
+                    JadepawError::agent_terminated(
+                        AgentTerminationReason::WasmTrap {
+                            reason: format!("LLM error: {}", err_msg),
+                            turn,
+                        },
+                    )
+                } else if err_msg.contains("output channel closed") {
+                    // Channel closure is a client disconnect, not a trap
+                    JadepawError::agent_terminated(
+                        AgentTerminationReason::WasmTrap {
+                            reason: format!("channel closed: {}", err_msg),
+                            turn,
+                        },
+                    )
+                } else {
+                    // Fallback: unknown errors are classified as traps with the
+                    // original error message preserved for debugging
+                    JadepawError::agent_terminated(
+                        AgentTerminationReason::WasmTrap {
+                            reason: err_msg,
+                            turn,
+                        },
+                    )
+                }
             })
         }
 
@@ -75,4 +110,21 @@ where
             ))
         }
     }
+}
+
+/// Attempt to extract a turn number from a loop error message.
+///
+/// The loop uses `anyhow` error messages containing "on turn N". This
+/// function parses that pattern and returns the turn number, defaulting
+/// to 0 if the turn cannot be determined.
+fn extract_turn_from_error(err_msg: &str) -> u32 {
+    // Look for "on turn <N>" pattern in the error message
+    if let Some(turn_pos) = err_msg.find("on turn ") {
+        let after = &err_msg[turn_pos + "on turn ".len()..];
+        let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(turn) = turn_str.parse::<u32>() {
+            return turn;
+        }
+    }
+    0
 }
