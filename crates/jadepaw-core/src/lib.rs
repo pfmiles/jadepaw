@@ -17,13 +17,17 @@
 //! - Agent loop execution (see jadepaw-agent)
 //! - HTTP/WS transport (see jadepaw-gateway)
 
+pub mod agent_types;
 pub mod capabilities;
 pub mod error;
+pub mod guest_exports;
 pub mod host_functions;
 pub mod types;
 
 // Re-export all public types at crate root for convenient imports.
+pub use agent_types::{AgentRequest, AgentResponse, AgentTerminationReason, ReActStep};
 pub use capabilities::{DomainPattern, InstanceCapabilities, PathPattern};
 pub use error::{JadepawError, Result};
+pub use guest_exports::{GuestExports, NextAction, ToolChoice, ToolDef};
 pub use host_functions::HostFunctions;
 pub use types::{SessionId, TenantId, ToolId};

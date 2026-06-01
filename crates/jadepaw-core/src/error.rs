@@ -3,6 +3,7 @@
 //! All errors are represented as variants of `JadepawError` with concrete
 //! type information for programmatic handling.
 
+use crate::agent_types::AgentTerminationReason;
 use std::fmt;
 
 /// Central error type for the jadepaw platform.
@@ -30,6 +31,15 @@ pub enum JadepawError {
         path: String,
         reason: String,
     },
+
+    /// The agent run was terminated by a safety guard.
+    ///
+    /// Wraps `AgentTerminationReason` to provide the specific termination
+    /// condition (iteration limit, wall-clock timeout, or Wasm trap).
+    AgentTerminated {
+        /// The specific termination reason.
+        reason: AgentTerminationReason,
+    },
 }
 
 impl JadepawError {
@@ -55,6 +65,11 @@ impl JadepawError {
             reason: reason.into(),
         }
     }
+
+    /// Construct an agent termination error.
+    pub fn agent_terminated(reason: AgentTerminationReason) -> Self {
+        Self::AgentTerminated { reason }
+    }
 }
 
 impl fmt::Display for JadepawError {
@@ -73,6 +88,9 @@ impl fmt::Display for JadepawError {
             Self::TrapError { message } => write!(f, "wasm trap: {}", message),
             Self::PathValidationError { path, reason } => {
                 write!(f, "path validation failed for '{}': {}", path, reason)
+            }
+            Self::AgentTerminated { reason } => {
+                write!(f, "agent terminated: {}", reason)
             }
         }
     }
