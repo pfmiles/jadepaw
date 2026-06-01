@@ -123,6 +123,17 @@ pub enum AgentTerminationReason {
         /// The turn number (0-indexed) on which the trap occurred.
         turn: u32,
     },
+    /// An infrastructure error that is not a Wasm trap.
+    ///
+    /// Used for LLM API failures, channel closures (client disconnects),
+    /// pool acquisition failures, and other host-side errors that are
+    /// semantically distinct from guest sandbox violations.
+    InfrastructureError {
+        /// Human-readable error context.
+        reason: String,
+        /// The turn number (0-indexed) on which the error occurred.
+        turn: u32,
+    },
 }
 
 impl fmt::Display for AgentTerminationReason {
@@ -146,6 +157,13 @@ impl fmt::Display for AgentTerminationReason {
                 write!(
                     f,
                     "wasm guest trapped on turn {}: {}",
+                    turn, reason
+                )
+            }
+            Self::InfrastructureError { reason, turn } => {
+                write!(
+                    f,
+                    "infrastructure error on turn {}: {}",
                     turn, reason
                 )
             }

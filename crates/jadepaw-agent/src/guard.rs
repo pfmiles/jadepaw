@@ -72,19 +72,22 @@ where
                         },
                     )
                 } else if err_msg.contains("LLM call failed") {
-                    // LLM failures are not Wasm traps — surface as a WasmTrap
-                    // with the specific error context preserved in the reason.
+                    // LLM failures are infrastructure errors, not Wasm traps.
+                    // Callers can distinguish transient network errors from
+                    // actual guest sandbox violations for retry/monitoring.
                     JadepawError::agent_terminated(
-                        AgentTerminationReason::WasmTrap {
+                        AgentTerminationReason::InfrastructureError {
                             reason: format!("LLM error: {}", err_msg),
                             turn,
                         },
                     )
                 } else if err_msg.contains("output channel closed") {
-                    // Channel closure is a client disconnect, not a trap
+                    // Channel closure is a client disconnect, not a trap.
+                    // Map to InfrastructureError so callers know the agent
+                    // didn't crash — the client went away.
                     JadepawError::agent_terminated(
-                        AgentTerminationReason::WasmTrap {
-                            reason: format!("channel closed: {}", err_msg),
+                        AgentTerminationReason::InfrastructureError {
+                            reason: format!("client disconnected: {}", err_msg),
                             turn,
                         },
                     )

@@ -77,7 +77,7 @@ pub async fn run_agent(
         .await
         .map_err(|e| {
             JadepawError::agent_terminated(
-                jadepaw_core::AgentTerminationReason::WasmTrap {
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
                     reason: format!("failed to acquire session: {}", e),
                     turn: 0,
                 },
@@ -121,7 +121,7 @@ pub async fn run_agent(
         })
         .ok_or_else(|| {
             JadepawError::agent_terminated(
-                jadepaw_core::AgentTerminationReason::WasmTrap {
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
                     reason: "agent completed without producing a final answer".to_string(),
                     turn: 0,
                 },
