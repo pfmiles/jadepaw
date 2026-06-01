@@ -5,6 +5,10 @@
 //! receives -1 from `memory.grow`, recoverable), then delegates to the inner
 //! limiter for per-instance hard cap checks.
 //!
+//! Note: `TenantQuotaLimiter` is implemented and tested but not yet wired
+//! into the `InstancePool`/`SessionState` infrastructure. It will be activated
+//! when per-tenant aggregate memory tracking is needed (Phase 4).
+//!
 //! # Design (D-07, D-08, D-09a)
 //!
 //! - `Ok(true)`: growth is within tenant budget AND instance hard cap
@@ -52,8 +56,8 @@ impl TenantQuotaLimiter {
         }
     }
 
-    /// Lower-level constructor that accepts a pre-measured budget in bytes.
-    /// Used primarily in tests.
+    /// Convenience alias for `new()`. Used primarily in tests to clarify intent
+    /// when constructing limiters with small byte-scale budgets.
     #[doc(hidden)]
     pub fn new_with_budget(
         budget_max_mb: u32,
