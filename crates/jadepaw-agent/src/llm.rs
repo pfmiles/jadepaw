@@ -180,44 +180,62 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
     let thought = extract_thought(response).unwrap_or_else(|| response.to_string());
     let response_upper = response.to_uppercase();
 
-    // Check for FINAL ANSWER first (more specific)
-    if let Some(pos) = response_upper.find("FINAL ANSWER:") {
-        let answer = response[pos + "FINAL ANSWER:".len()..].trim().to_string();
-        if !answer.is_empty() {
-            return LlmDirective::Finish {
-                thought,
-                answer,
-            };
-        }
-    }
+    // Restrict directive search to the post-THOUGHT region so that
+    // mentions of "ACTION:" or "FINAL ANSWER:" inside the thought
+    // section do not cause false-positive directive matches.
+    let search_start = response_upper
+        .find("THOUGHT:")
+        .map(|p| p + "THOUGHT:".len())
+        .unwrap_or(0);
+    let after_thought = &response[search_start..];
+    let after_thought_upper = &response_upper[search_start..];
 
-    // Check for ACTION:
-    if let Some(pos) = response_upper.find("ACTION:") {
-        let action_str = response[pos + "ACTION:".len()..].trim();
-        // Parse tool_name(args) format
-        if let Some(paren_pos) = action_str.find('(') {
-            let tool = action_str[..paren_pos].trim().to_string();
-            let args_and_close = &action_str[paren_pos + 1..];
-            if let Some(close_pos) = args_and_close.rfind(')') {
-                let args = args_and_close[..close_pos].trim().to_string();
-                if !tool.is_empty() {
-                    return LlmDirective::Act {
-                        thought,
-                        tool,
-                        args,
-                    };
-                }
+    // Find the directive positions, then pick whichever appears first
+    // (rather than hardcoding FINAL ANSWER priority over ACTION).
+    let fa_pos = after_thought_upper.find("FINAL ANSWER:");
+    let act_pos = after_thought_upper.find("ACTION:");
+
+    match (fa_pos, act_pos) {
+        (Some(fa), Some(act)) if fa < act => {
+            let answer = after_thought[fa + "FINAL ANSWER:".len()..].trim().to_string();
+            if !answer.is_empty() {
+                return LlmDirective::Finish { thought, answer };
             }
         }
-        // Fallback: treat entire string as tool name with empty args
-        let tool = action_str.trim().to_string();
-        if !tool.is_empty() {
-            return LlmDirective::Act {
-                thought,
-                tool,
-                args: String::new(),
-            };
+        (_, Some(act)) => {
+            let action_str = after_thought[act + "ACTION:".len()..].trim();
+            // Parse tool_name(args) format
+            if let Some(paren_pos) = action_str.find('(') {
+                let tool = action_str[..paren_pos].trim().to_string();
+                let args_and_close = &action_str[paren_pos + 1..];
+                if let Some(close_pos) = args_and_close.rfind(')') {
+                    let args = args_and_close[..close_pos].trim().to_string();
+                    if !tool.is_empty() {
+                        return LlmDirective::Act {
+                            thought,
+                            tool,
+                            args,
+                        };
+                    }
+                }
+            }
+            // Fallback: treat entire string as tool name with empty args
+            let tool = action_str.trim().to_string();
+            if !tool.is_empty() {
+                return LlmDirective::Act {
+                    thought,
+                    tool,
+                    args: String::new(),
+                };
+            }
         }
+        (Some(fa), None) => {
+            let answer = after_thought[fa + "FINAL ANSWER:".len()..].trim().to_string();
+            if !answer.is_empty() {
+                return LlmDirective::Finish { thought, answer };
+            }
+        }
+        (None, None) => {}
     }
 
     LlmDirective::ContinueThinking { thought }
