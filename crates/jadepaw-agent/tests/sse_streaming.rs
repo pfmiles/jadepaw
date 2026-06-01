@@ -181,11 +181,35 @@ async fn test_sse_injection_sanitization() {
         "expected observation event: {dbg}"
     );
 
+    // CRITICAL: Verify no injected event type. The axum Event builder
+    // encodes the content `event: fake` inside a data: field, so it
+    // appears as `data: event: fake`. Count raw `event: ` at line
+    // starts (after newlines). In axum's Debug format, there should
+    // be exactly one `event: observation` line start. The injected
+    // `event: fake` should only appear after `data:`.
+    //
+    // The Debug output looks like:
+    //   event: observation\ndata: \ndata: \ndata: event: fake\ndata: ...
+    //
+    // So `\nevent: ` (newline then event:) should appear 0 times:
+    // the only event: is at the start of the buffer.
+    let newline_event_count = dbg.matches("\nevent: ").count();
+    assert_eq!(
+        newline_event_count, 0,
+        "expected 0 '\\nevent: ' occurrences (no injected event declarations): {dbg}"
+    );
+
     // The axum Event builder splits newlines into separate data: fields.
-    // Verify the content is present but properly encoded (not raw format)
+    // Verify the injected content appears in data: lines, not as raw format.
     assert!(
         dbg.contains("fake") || dbg.contains("injected"),
         "content should be present in event: {dbg}"
+    );
+
+    // Verify the event: observation declaration appears (exactly once)
+    assert!(
+        dbg.starts_with("Event {") || dbg.contains("event: observation"),
+        "event should be observation: {dbg}"
     );
 }
 
