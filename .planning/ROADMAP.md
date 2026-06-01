@@ -9,7 +9,7 @@
 
 - [x] **Phase 1: Project Foundation** — Workspace scaffold, crate structure, build system, CI (completed 2026-05-28)
 - [x] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation (completed 2026-05-30)
-- [ ] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards
+- [x] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards (completed 2026-06-01)
 - [ ] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools
 - [ ] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence
 - [ ] **Phase 6: Skill System** — Declarative SKILL.md format with hot loading and runtime swapping
@@ -81,7 +81,7 @@ Plans:
   4. An agent that takes longer than the wall-clock timeout (configurable, default 5 minutes) is terminated with a timeout error message
   5. The agent can be invoked programmatically (API call or test harness) and returns structured results including the final answer and execution trace
 
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 **Wave 1**
@@ -90,7 +90,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md — async-openai LLM integration (chat-completion feature, streaming), SSE event relay (create_sse_channel), loop wired to real Client<Box<dyn Config>>, streaming integration tests
+- [x] 03-02-PLAN.md — async-openai LLM integration (chat-completion feature, streaming), SSE event relay (create_sse_channel), loop wired to real Client<Box<dyn Config>>, streaming integration tests
 
 **UI hint:** yes
 
@@ -196,7 +196,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
-| 3. Agent Runtime | 1/2 | In Progress|  |
+| 3. Agent Runtime | 2/2 | Complete   | 2026-06-01 |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
