@@ -116,11 +116,26 @@ pub async fn react_loop(
                 return Ok(trace);
             }
             LlmDirective::Act { thought: _, tool, args } => {
-                // Emit action step
+                // Emit action step.
+                // Attempt JSON parse of args; on failure, log a warning
+                // and fall back to wrapping as a plain string value so
+                // downstream consumers can still inspect the raw args.
+                let parsed_args = match serde_json::from_str(&args) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            turn = turn,
+                            tool = %tool,
+                            raw_args = %args,
+                            error = %e,
+                            "failed to parse tool args as JSON, storing as raw string"
+                        );
+                        serde_json::Value::String(args.clone())
+                    }
+                };
                 let action_step = ReActStep::Action {
                     tool: tool.clone(),
-                    args: serde_json::from_str(&args)
-                        .unwrap_or(serde_json::Value::String(args.clone())),
+                    args: parsed_args,
                 };
                 if tx.send(action_step.clone()).await.is_err() {
                     anyhow::bail!("output channel closed on turn {}", turn);
