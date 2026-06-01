@@ -1,300 +1,171 @@
 ---
 phase: 03-agent-runtime
-reviewed: 2026-06-01T23:45:00Z
+reviewed: 2026-06-02T08:00:00Z
 depth: standard
-files_reviewed: 12
+files_reviewed: 49
 files_reviewed_list:
+  - Cargo.lock
+  - Cargo.toml
   - crates/jadepaw-agent/Cargo.toml
   - crates/jadepaw-agent/src/guard.rs
   - crates/jadepaw-agent/src/lib.rs
+  - crates/jadepaw-agent/src/llm.rs
   - crates/jadepaw-agent/src/loop.rs
+  - crates/jadepaw-agent/src/stream.rs
   - crates/jadepaw-agent/tests/agent_loop.rs
+  - crates/jadepaw-agent/tests/sse_streaming.rs
   - crates/jadepaw-agent/tests/termination.rs
   - crates/jadepaw-core/Cargo.toml
   - crates/jadepaw-core/src/agent_types.rs
+  - crates/jadepaw-core/src/capabilities.rs
   - crates/jadepaw-core/src/error.rs
   - crates/jadepaw-core/src/guest_exports.rs
+  - crates/jadepaw-core/src/host_functions.rs
   - crates/jadepaw-core/src/lib.rs
+  - crates/jadepaw-core/src/types.rs
   - crates/jadepaw-core/tests/agent_types.rs
+  - crates/jadepaw-core/tests/capabilities.rs
+  - crates/jadepaw-core/tests/host_functions.rs
+  - crates/jadepaw-core/tests/types.rs
+  - crates/jadepaw-wasm/Cargo.toml
+  - crates/jadepaw-wasm/src/capability/mod.rs
+  - crates/jadepaw-wasm/src/engine.rs
+  - crates/jadepaw-wasm/src/epoch.rs
+  - crates/jadepaw-wasm/src/host/filesystem.rs
+  - crates/jadepaw-wasm/src/host/logging.rs
+  - crates/jadepaw-wasm/src/host/mod.rs
+  - crates/jadepaw-wasm/src/host/network.rs
+  - crates/jadepaw-wasm/src/lib.rs
+  - crates/jadepaw-wasm/src/limits/instance_hard.rs
+  - crates/jadepaw-wasm/src/limits/mod.rs
+  - crates/jadepaw-wasm/src/limits/tenant_quota.rs
+  - crates/jadepaw-wasm/src/linker.rs
+  - crates/jadepaw-wasm/src/path.rs
+  - crates/jadepaw-wasm/src/pool.rs
+  - crates/jadepaw-wasm/src/session.rs
+  - crates/jadepaw-wasm/tests/capability.rs
+  - crates/jadepaw-wasm/tests/engine_smoke.rs
+  - crates/jadepaw-wasm/tests/epoch_yield.rs
+  - crates/jadepaw-wasm/tests/fixtures/noop.wat
+  - crates/jadepaw-wasm/tests/fixtures/tool_caller.wat
+  - crates/jadepaw-wasm/tests/limits.rs
+  - crates/jadepaw-wasm/tests/path_validation.rs
+  - crates/jadepaw-wasm/tests/pool.rs
+  - crates/jadepaw-wasm/tests/stress_concurrent.rs
+  - docs/architecture.md
 findings:
-  critical: 2
+  critical: 0
   warning: 4
-  info: 2
-  total: 8
+  info: 5
+  total: 9
 status: issues_found
 ---
 
 # Phase 03: Code Review Report
 
-**Reviewed:** 2026-06-01T23:45:00Z
+**Reviewed:** 2026-06-02T08:00:00Z
 **Depth:** standard
-**Files Reviewed:** 12
+**Files Reviewed:** 49
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the agent runtime implementation spanning `jadepaw-agent` (ReAct loop, LLM integration, termination guard, SSE streaming) and `jadepaw-core` (shared types, error types, guest exports).
+Reviewed the full Phase 03 agent runtime implementation: `jadepaw-agent` (ReAct loop, LLM integration, SSE streaming, termination guards), `jadepaw-core` (shared types, error types, guest exports, capabilities), and `jadepaw-wasm` (engine, pool, session, host functions, resource limits, path validation). The code compiles cleanly with zero warnings.
 
-The overall architecture is sound: types are correctly separated across crates (`jadepaw-core` carries zero wasmtime dependency), the ReAct loop skeleton is clean, and the `tokio::select!` termination guard pattern is correct. However, 2 critical semantic issues and 4 warnings were identified. The most impactful problems are (1) the indiscriminate mapping of all agent loop errors to `WasmTrap` -- including LLM API errors, channel closures, and pool acquisition failures -- and (2) sub-second timeout truncation in the wall-clock termination reason. Both would prevent callers from correctly diagnosing what went wrong in production.
+The previous review's critical findings (CR-01: indiscriminate WasmTrap catch-all and CR-02: sub-second timeout truncation) have been properly addressed — the code now uses `InfrastructureError` for LLM/channel errors and `WallClockTimeout` with millisecond-precision fields. The structural findings (WR-01: missing thought in trace, WR-02: unscoped directive search, WR-03: dead test) have also been fixed.
 
----
-
-## Critical Issues
-
-### CR-01: `AgentTerminationReason::WasmTrap` used as a catch-all for non-Wasm failures
-
-**File:** `crates/jadepaw-agent/src/guard.rs:74-100`, `crates/jadepaw-agent/src/lib.rs:79-85,122-129`
-**Issue:**
-The `WasmTrap` variant is used indiscriminately for three fundamentally different failure categories:
-
-| Actual failure | Where it happens | Termination reason used |
-|---|---|---|
-| LLM API call failed (network, auth, rate limit) | `guard.rs:74-82` | `WasmTrap` |
-| Output channel closed (client disconnect) | `guard.rs:83-90` | `WasmTrap` |
-| Any unknown loop error | `guard.rs:91-99` | `WasmTrap` |
-| Pool acquisition failed | `lib.rs:79-84` | `WasmTrap` |
-| No `Finished` step found in trace | `lib.rs:122-128` | `WasmTrap` |
-
-The code self-documents the problem on line 75: "LLM failures are not Wasm traps -- surface as a WasmTrap". A caller receiving `WasmTrap` cannot distinguish an actual guest sandbox violation from a transient network error, making operational monitoring and retry logic impossible to implement correctly.
-
-**Fix:** Introduce a dedicated variant for infrastructure errors that are not Wasm traps:
-
-```rust
-// In agent_types.rs, add to AgentTerminationReason:
-InfrastructureError {
-    /// Human-readable error context.
-    reason: String,
-    /// The turn number (0-indexed) on which the error occurred.
-    turn: u32,
-},
-```
-
-Then update call sites:
-
-```rust
-// guard.rs:74-82 — LLM failures
-JadepawError::agent_terminated(
-    AgentTerminationReason::InfrastructureError {
-        reason: format!("LLM error: {}", err_msg),
-        turn,
-    },
-)
-
-// guard.rs:83-90 — channel closure (client disconnect)
-JadepawError::agent_terminated(
-    AgentTerminationReason::InfrastructureError {
-        reason: format!("client disconnected: {}", err_msg),
-        turn,
-    },
-)
-
-// lib.rs:79-84 — pool acquisition
-JadepawError::agent_terminated(
-    AgentTerminationReason::InfrastructureError {
-        reason: format!("failed to acquire session: {}", e),
-        turn: 0,
-    },
-)
-
-// lib.rs:122-128 — no Finished step
-JadepawError::agent_terminated(
-    AgentTerminationReason::InfrastructureError {
-        reason: "agent completed without producing a final answer".to_string(),
-        turn: 0,
-    },
-)
-```
-
-Alternately, if the caller really does need to collate these with Wasm traps, provide a discriminator method on `AgentTerminationReason` that callers can use. But the variant name `WasmTrap` must not be misleading about what actually failed.
-
-### CR-02: Wall-clock timeout truncates sub-second durations to zero
-
-**File:** `crates/jadepaw-agent/src/guard.rs:104-109`
-**Issue:**
-When the wall-clock timeout fires, both `elapsed_secs` and `max_secs` are populated via `config.wall_clock_timeout.as_secs()`:
-
-```rust
-_ = tokio::time::sleep(config.wall_clock_timeout) => {
-    Err(JadepawError::agent_terminated(
-        AgentTerminationReason::WallClockTimeout {
-            elapsed_secs: config.wall_clock_timeout.as_secs(),
-            max_secs: config.wall_clock_timeout.as_secs(),
-        },
-    ))
-}
-```
-
-`Duration::as_secs()` truncates to whole seconds. For a 500ms timeout, both fields become `0`. The unit test `run_with_guard_timeout_value_propagated` (termination.rs:66-89) even explicitly asserts this behavior: `assert_eq!(max_secs, 0)` for a 10ms timeout. This is a correctness issue because the consumer of `WallClockTimeout` has no way to know the actual intended timeout value. A production monitoring system would log "agent timed out after 0 seconds (limit: 0 seconds)", which is misleading.
-
-**Fix:** Either round up to avoid zero values, or preserve sub-second precision. Since `AgentTerminationReason` derives `PartialEq`/`Eq` and the comment says `u64` was chosen for that reason, the simplest fix is to round up:
-
-```rust
-_ = tokio::time::sleep(config.wall_clock_timeout) => {
-    let secs = (config.wall_clock_timeout.as_millis() as u64).div_ceil(1000);
-    Err(JadepawError::agent_terminated(
-        AgentTerminationReason::WallClockTimeout {
-            elapsed_secs: secs,
-            max_secs: secs,
-        },
-    ))
-}
-```
-
-Alternatively, change `WallClockTimeout` to preserve millisecond precision while retaining `Eq`:
-
-```rust
-WallClockTimeout {
-    /// Elapsed time in milliseconds.
-    elapsed_ms: u64,
-    /// Configured maximum in milliseconds.
-    max_ms: u64,
-},
-```
-
-Then at the call site:
-
-```rust
-let ms = config.wall_clock_timeout.as_millis() as u64;
-Err(JadepawError::agent_terminated(
-    AgentTerminationReason::WallClockTimeout {
-        elapsed_ms: ms,
-        max_ms: ms,
-    },
-))
-```
+No new critical issues were found. Four warnings cover: `TenantQuotaLimiter` defined but never wired into the pool infrastructure, unused dependencies in `jadepaw-agent/Cargo.toml`, `GuardConfig` taken by value preventing reuse across sessions, and the `new_with_budget` constructor having a misleading doc comment. Five informational items cover: outdated `async_support` doc comment, `context` parameter only applied to first turn, `log_message` missing debug/trace level routing, `domain_matches` limitations for internal wildcards, and `normalize_path` using a sentinel value for over-long paths.
 
 ---
 
 ## Warnings
 
-### WR-01: `ContinueThinking` turns omit Thought steps from the execution trace
+### WR-01: `TenantQuotaLimiter` defined and exported but never wired into pool/session infrastructure
 
-**File:** `crates/jadepaw-agent/src/loop.rs:96-101,165-173`
-**Issue:**
-When `parse_next_action` returns `LlmDirective::ContinueThinking`, the thought is sent through the SSE channel (line 96-101, before the match) but never pushed to `trace: Vec<ReActStep>`. Only the assistant message is appended to the LLM message history (lines 167-172). This means the `trace` vector returned by `react_loop()` will be missing all `ReActStep::Thought` entries for turns where the LLM did not produce an ACTION or FINAL ANSWER. The `Act` branch also omits the Thought from trace (only adding Action and Observation at lines 143 and 155).
+**File:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs` (entire module), `crates/jadepaw-wasm/src/session.rs:24-27`
+**Issue:** `TenantQuotaLimiter` is a fully-implemented `ResourceLimiter` with correct delegation semantics, but it is never instantiated in production code. `SessionLimits` only contains an `InstanceHardLimiter` (`session.rs:26`). The `store.limiter()` closure in `pool.rs:214` only provides the hard limiter: `store.limiter(|s| &mut s.limits.hard_limit)`. No code path wraps `InstanceHardLimiter` in a `TenantQuotaLimiter`. This means tenant-level aggregate budget enforcement is completely absent — every instance operates independently with only the per-instance 64MB cap.
 
-The SSE stream correctly receives the thought events, but the structured `trace` in `AgentResponse` is incomplete. Downstream consumers that inspect the trace programmatically would see only Action/Observation/Finished entries with no reasoning context.
-
-**Fix:** Push the `thought` to `trace` before entering the match, so all branches benefit:
+**Fix:** Either wire `TenantQuotaLimiter` into `SessionLimits` with a default-unlimited budget, or explicitly document that this is deferred to a later phase. For an immediate fix, the `SessionLimits` struct could store an `Option<TenantQuotaLimiter>`:
 
 ```rust
-// After line 98 (the Thought is already constructed):
-let thought = ReActStep::Thought {
-    content: full_response.clone(),
-};
-if tx.send(thought.clone()).await.is_err() {
-    anyhow::bail!("output channel closed on turn {}", turn);
-}
-trace.push(thought);  // <-- ADD THIS LINE
-
-// Then proceed with match
-let action = llm::parse_next_action(&full_response);
-match action { ... }
-```
-
-### WR-02: `parse_next_action` directive search not scoped to post-THOUGHT region
-
-**File:** `crates/jadepaw-agent/src/llm.rs:184-221`
-**Issue:**
-`parse_next_action` independently searches the entire response text for `FINAL ANSWER:` and `ACTION:` (case-insensitively). Meanwhile, `extract_thought` (line 231) correctly identifies the THOUGHT section boundaries by finding where `FINAL ANSWER:` or `ACTION:` begins after the `THOUGHT:` prefix. But `parse_next_action` does its own `find("FINAL ANSWER:")` and `find("ACTION:")` over the full raw response, ignoring the boundary computed by `extract_thought`.
-
-In practice: if the LLM writes `ACTION:` within its THOUGHT section (e.g., "I should take some action: need to verify credentials first"), the parser will match it as a tool invocation directive at the wrong location. The same applies if `FINAL ANSWER:` appears in the THOUGHT (e.g., "The user wants a final answer: so I will..."). This is a false-positive risk that grows with LLM verbosity.
-
-Additionally, the priority order hardcodes "FINAL ANSWER before ACTION" (line 184 checked before line 195), which would mis-handle a response where ACTION appears before FINAL ANSWER (though in the prompt format ACTION should come first anyway -- this is a latent parsing bug).
-
-**Fix:** Restrict the directive search to the post-THOUGHT region:
-
-```rust
-pub fn parse_next_action(response: &str) -> LlmDirective {
-    let thought = extract_thought(response).unwrap_or_else(|| response.to_string());
-    let response_upper = response.to_uppercase();
-
-    // Find the THOUGHT section end to scope directive searches
-    let search_start = response_upper
-        .find("THOUGHT:")
-        .map(|p| p + "THOUGHT:".len())
-        .unwrap_or(0);
-    let after_thought = &response[search_start..];
-    let after_thought_upper = &response_upper[search_start..];
-
-    // Find the first directive in the post-THOUGHT region
-    let fa_pos = after_thought_upper.find("FINAL ANSWER:");
-    let act_pos = after_thought_upper.find("ACTION:");
-
-    // Pick whichever comes first
-    match (fa_pos, act_pos) {
-        (Some(fa), Some(act)) if fa < act => {
-            let answer = after_thought[fa + "FINAL ANSWER:".len()..].trim().to_string();
-            if !answer.is_empty() {
-                return LlmDirective::Finish { thought, answer };
-            }
-        }
-        (_, Some(act)) => {
-            let action_str = after_thought[act + "ACTION:".len()..].trim();
-            if let Some(paren_pos) = action_str.find('(') { /* ... parse tool(args) */ }
-            // ... existing tool parsing logic ...
-        }
-        (Some(fa), None) => {
-            let answer = after_thought[fa + "FINAL ANSWER:".len()..].trim().to_string();
-            if !answer.is_empty() {
-                return LlmDirective::Finish { thought, answer };
-            }
-        }
-        (None, None) => {}
-    }
-
-    LlmDirective::ContinueThinking { thought }
+// session.rs
+pub struct SessionLimits {
+    pub hard_limit: InstanceHardLimiter,
+    pub tenant_quota: Option<TenantQuotaLimiter>,
 }
 ```
 
-### WR-03: `run_with_guard` maps unknown loop errors with `turn: 0` when `turn` is recoverable
-
-**File:** `crates/jadepaw-agent/src/guard.rs:64-65,91-99`
-**Issue:**
-The fallback arm (lines 91-99) maps unknown errors to `WasmTrap { reason: err_msg, turn }` where `turn` defaults to 0 from `extract_turn_from_error`. However, many loop errors encode the turn number in their message ("LLM call failed on turn 3", "output channel closed on turn 3"). The `extract_turn_from_error` function (lines 120-130) already correctly parses this pattern. This is not a correctness issue per se, but the hardcoded `turn: 0` comment on line 66 is misleading since `extract_turn_from_error` handles this correctly.
-
-**Fix:** The current code actually works correctly (extract_turn_from_error parses "on turn N"). The doc comment is just stale. Update the comment to reflect reality:
-
+Alternatively, if tenant quotas are truly deferred, add a doc comment on the module:
 ```rust
-/// Attempt to extract a turn number from a loop error message.
-///
-/// The loop uses `anyhow` error messages containing "on turn N". This
-/// function parses that pattern and returns the turn number, defaulting
-/// to 0 if the turn cannot be determined.
+//! Note: TenantQuotaLimiter is implemented and tested but not yet wired
+//! into the InstancePool/SessionState infrastructure. It will be activated
+//! when per-tenant aggregate memory tracking is needed (Phase 4).
 ```
 
-(This is already the current doc comment -- the issue is actually NOT a bug, just noting that the previous review version flagged this. The implementation is correct.)
+### WR-02: Unused dependencies in `jadepaw-agent/Cargo.toml`
 
-Actually, re-reading the code: `extract_turn_from_error` is only called on line 65, and its result `turn` is used for LLM failures (line 69-73), channel closures (line 86-88), and the fallback (line 94-97). This is correct behavior. The only concern is that `turn: 0` could be ambiguous when extraction fails -- it's indistinguishable from a real turn-0 error. Consider returning `Option<u32>` and using `None` when extraction fails, but this is minor.
+**File:** `crates/jadepaw-agent/Cargo.toml:10,19,29-33`
+**Issue:** Three declared dependencies have no corresponding usage in any source file under `crates/jadepaw-agent/src/`:
+- `jadepaw-bus` (line 10) — planned for Phase 3+ but not yet imported
+- `async-trait` (line 19) — no `#[async_trait]` usage anywhere in the agent crate
+- `redis` (lines 29-33, optional) — no redis code paths exist in the agent crate
 
-### WR-04: Test `run_agent_returns_structured_response` does not test `run_agent`
+Declaring dependencies before they are used adds unnecessary compilation overhead, increases attack surface for `cargo-audit`, and makes dependency auditing harder. The `redis` feature is especially problematic since it defines features (`single-node`, `cluster`, `redis`) that have no behavioral effect.
 
-**File:** `crates/jadepaw-agent/tests/agent_loop.rs:57-68`
-**Issue:**
-The test creates an `Arc<InstancePool>` and binds it to `_pool`, but never calls `run_agent()`. The comment on line 65 says "skip full integration test without API key; structural verification is handled in the SSE streaming tests." This test passes whether `run_agent` compiles or not. If the function signature changed (e.g., a new required parameter was added), this test would not catch it. It risks giving a false sense of coverage.
+**Fix:** Remove `jadepaw-bus`, `async-trait`, and the redis feature block from `jadepaw-agent/Cargo.toml`. Add them back when the implementing code is committed:
+```diff
+- jadepaw-bus = { path = "../jadepaw-bus" }
+- async-trait = "0.1"
+- 
+- [features]
+- default = ["single-node"]
+- single-node = []
+- cluster = ["redis"]
+- redis = ["dep:redis"]
+- 
+- [dependencies.redis]
+- workspace = true
+- optional = true
+```
 
-**Fix:** Either:
-1. Remove the dead test entirely (it asserts nothing), or
-2. Write a compile-time type assertion that exercises the function signature:
+### WR-03: `GuardConfig` consumed by value in `run_with_guard`, preventing reuse
 
+**File:** `crates/jadepaw-agent/src/guard.rs:47-48`, `crates/jadepaw-agent/src/lib.rs:91,95`
+**Issue:** `run_with_guard` takes `config: GuardConfig` by value, which moves ownership. In `run_agent` (lib.rs:91,95), `guard_config` is created inline and passed directly, so it works for a single call. However, for a production server processing thousands of concurrent requests, the same `GuardConfig` would ideally be shared across all sessions. Taking by value forces unnecessary cloning or per-call construction.
+
+**Fix:** Change to borrow, matching the pattern used by `LoopConfig` (also constructed inline but could benefit from sharing):
 ```rust
-#[tokio::test(flavor = "multi_thread")]
-async fn run_agent_signature_type_checks() {
-    // Verify run_agent's type signature compiles by creating an invalid
-    // LLM client that will fail immediately (no API key needed).
-    let pool = Arc::new(make_test_pool());
-    let config = async_openai::config::OpenAIConfig::new()
-        .with_api_base("http://[::1]:1"); // invalid port, immediate fail
-    let client = async_openai::Client::with_config(config);
-    let result = jadepaw_agent::run_agent(
-        jadepaw_core::AgentRequest::default(),
-        pool,
-        client,
-        "gpt-4",
-    )
-    .await;
-    // Expected to fail (connection refused), but type must compile
-    assert!(result.is_err());
+// guard.rs:47
+pub async fn run_with_guard<F, Fut>(
+    config: &GuardConfig,  // borrowed instead of owned
+    agent_loop: F,
+) -> Result<Vec<ReActStep>, JadepawError>
+
+// guard.rs:55
+tokio::select! {
+    result = agent_loop() => { ... }
+    _ = tokio::time::sleep(config.wall_clock_timeout) => { ... }
+}
+```
+
+Note: `tokio::time::sleep` takes `Duration` by value (Copy), so borrowing `config` still works correctly for the timeout branch.
+
+### WR-04: `TenantQuotaLimiter::new_with_budget` doc comment is misleading
+
+**File:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs:55-63`
+**Issue:** The `new_with_budget` method's doc comment says "Lower-level constructor that accepts a pre-measured budget in bytes", but its signature takes `budget_max_mb: u32` (megabytes), not bytes. Internally it simply delegates to `Self::new()`, making it a pure alias. The comment is misleading because it suggests the method accepts bytes when it actually accepts megabytes.
+
+**Fix:** Either update the comment or remove the method entirely (it's only used in tests and the tests could call `TenantQuotaLimiter::new()` directly):
+```rust
+/// Convenience alias for `new()`. Used primarily in tests to clarify intent
+/// when constructing limiters with small byte-scale budgets.
+#[doc(hidden)]
+pub fn new_with_budget(
+    budget_max_mb: u32,
+    tenant_budget_used: Arc<AtomicUsize>,
+    inner: InstanceHardLimiter,
+) -> Self {
+    Self::new(budget_max_mb, tenant_budget_used, inner)
 }
 ```
 
@@ -302,44 +173,80 @@ async fn run_agent_signature_type_checks() {
 
 ## Info
 
-### IN-01: `LlmDirective::Finish.thought` and `ContinueThinking.thought` destructured as `_`
+### IN-01: Outdated doc comment references deprecated `async_support(true)`
 
-**File:** `crates/jadepaw-agent/src/loop.rs:107,165`
-**Issue:**
-The `thought` field from `LlmDirective::Finish` and `ContinueThinking` is bound with `thought: _`, discarding the LLM's reasoning text. While the full response text is already captured as a `ReActStep::Thought` emitted via the channel before the match, the destructure pattern `thought: _` signals that the field exists but is intentionally unused. This is a code clarity issue: readers might wonder why a field is carried through the type system but never read.
+**File:** `crates/jadepaw-wasm/src/engine.rs:13`
+**Issue:** The module doc header states that the Engine configuration includes `async_support(true)`, but this method is deprecated in wasmtime 45.0 (it is a no-op since async is always supported when the `async` feature is enabled). The code correctly does NOT call it. The comment is misleading to readers who might wonder why it's mentioned but not called.
 
-**Fix:** Either remove the `thought` field from the `LlmDirective::Finish` and `ContinueThinking` variants (since the full response text is already used), or explicitly name the unused binding with a comment:
-
+**Fix:** Update line 13:
 ```rust
-LlmDirective::Finish { thought: _final_thought, answer } => {
-    // _final_thought is available if we decide to expose it in the trace;
-    // currently the full response text (emitted as Thought above) suffices.
-    // ...
+//! - Async support is built-in (wasmtime 45.0+; no explicit `async_support` call needed)
+```
+
+### IN-02: `context` parameter only applied to initial messages, not re-injected per turn
+
+**File:** `crates/jadepaw-agent/src/loop.rs:72-74`
+**Issue:** The `context` (e.g., skill instructions, system context) is embedded in the initial user message via `build_initial_messages()` but is never re-injected into the conversation history in subsequent turns. On Turn 2+, the LLM sees only `{system_prompt, user_message_with_context, assistant_msgs...}`. As the conversation grows, the initial context may lose prominence relative to more recent assistant messages. This is a design choice for v1 but should be documented.
+
+**Fix:** Update the `react_loop` doc comment to clarify this behavior:
+```rust
+/// - `context` is embedded in the first user message only (not re-injected
+///   each turn). For long-running agent sessions, skill instructions carried
+///   in the system_prompt are preferred over context for persistent guidance.
+```
+
+### IN-03: `log_message` host function silently maps `debug`/`trace` levels to `info`
+
+**File:** `crates/jadepaw-wasm/src/host/logging.rs:95-99`
+**Issue:** The level routing match only handles `"error"` and `"warn"`. All other level strings — including `"debug"`, `"trace"`, `"off"`, and any guest-side typos — fall through to `info!`. This means a guest that intentionally logs at `"debug"` level to reduce noise will still emit `info`-level events in production, potentially inflating log volume.
+
+**Fix:** Add `"debug"` and `"trace"` routing arms, and emit a warning for unrecognized levels:
+```rust
+match level {
+    "error" => error!(%session_id, "guest: {}", message),
+    "warn" => warn!(%session_id, "guest: {}", message),
+    "info" => info!(%session_id, "guest: {}", message),
+    "debug" => debug!(%session_id, "guest: {}", message),
+    "trace" => trace!(%session_id, "guest: {}", message),
+    unknown => {
+        warn!(%session_id, "guest used unrecognized log level '{}', defaulting to info", unknown);
+        info!(%session_id, "guest: {}", message);
+    }
 }
 ```
 
-### IN-02: `core::result::Result` vs `std::result::Result` inconsistency in `lib.rs`
+### IN-04: `domain_matches` internal wildcard limitations not documented
 
-**File:** `crates/jadepaw-agent/src/lib.rs:65`
-**Issue:**
-The `run_agent` return type uses `core::result::Result<..>` with nested `core::result::Result<Event, Infallible>` inside the `Stream` item type. Meanwhile `jadepaw_core::Result` is an alias for `std::result::Result<T, JadepawError>`. In Rust, `core::result::Result` is a re-export of `std::result::Result` (they are the same type), so this is harmless at runtime, but the inconsistency is confusing to readers. Using `Result` directly (imported from `std::result` or `core::result`) vs the crate alias requires mental context-switching.
+**File:** `crates/jadepaw-wasm/src/capability/mod.rs:98-124`
+**Issue:** The `domain_matches` method only supports `*` as a bare wildcard (`"*"`) or as a prefix wildcard (`"*.example.com"`). A pattern like `"api.*.com"` or `"*.svc.*.internal"` would not match because internal `*` segments are not processed. `DomainPattern` accepts arbitrary strings, so a user could configure an unsupported pattern and get unexpected denials.
 
-**Fix:** Import `std::result::Result` or just use `Result` consistently. For the `Infallible` error type in the stream, a type alias would clarify intent:
-
+**Fix:** Add a doc comment to `DomainPattern` documenting the supported pattern syntax:
 ```rust
-use std::result::Result as StdResult;
-use std::convert::Infallible;
+/// Supported patterns:
+/// - `"*"` — matches any domain
+/// - `"*.example.com"` — matches single-subdomain wildcards (e.g., `api.example.com`)
+/// - `"exact.domain.com"` — exact match only
+///
+/// Note: internal wildcards (e.g., `"api.*.com"`) are not yet supported.
+/// Multi-level subdomain matching requires multiple patterns.
+```
 
-pub async fn run_agent(
-    // ...
-) -> jadepaw_core::Result<(
-    AgentResponse,
-    impl Stream<Item = StdResult<Event, Infallible>>,
-)>
+### IN-05: `normalize_path` uses `PathBuf::from("..")` as sentinel for over-long paths
+
+**File:** `crates/jadepaw-wasm/src/path.rs:44-47`
+**Issue:** When a guest path exceeds `MAX_PATH_LEN` (4096 bytes), `normalize_path` returns `PathBuf::from("..")` as a sentinel. The sentinel causes `validate_sandbox_path` to fail the prefix check (correctly rejecting the operation), but the sentinel value does not carry any information about the original over-long path. Operators debugging "path validation failed" errors in logs would see `..` as the rejected path rather than the actual (truncation-worthy) guest input. Fortunately `validate_sandbox_path` does log the original guest path in the error message (`guest_path.to_string()` is the full input), so this is adequate for troubleshooting. The sentinel pattern is unusual but functionally correct.
+
+**Fix:** No code change needed — consider adding a comment to the sentinel return noting that the original path is logged by `validate_sandbox_path`:
+```rust
+if path.len() > MAX_PATH_LEN {
+    // Sentinel: causes validate_sandbox_path to reject. The caller
+    // (validate_sandbox_path) logs the original untruncated guest_path.
+    return PathBuf::from("..");
+}
 ```
 
 ---
 
-_Reviewed: 2026-06-01T23:45:00Z_
+_Reviewed: 2026-06-02T08:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
