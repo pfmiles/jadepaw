@@ -56,15 +56,24 @@ async fn sse_channel_produces_events() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_agent_returns_structured_response() {
-    // This test verifies the structural contract of run_agent() with a real
-    // LLM client. Since a real API key is required, the test verifies that
-    // the function signature, imports, and type system are correct by attempting
-    // a call that will fail with an API error (not a compilation error).
-    // The test demonstrates the function signature is correct and compiles.
-    let _pool = Arc::new(make_test_pool());
-    // run_agent now takes Client<Box<dyn Config>> + model — skip full
-    // integration test without API key; structural verification is handled
-    // in the SSE streaming tests.
+    // Verify run_agent's type signature compiles by creating an invalid
+    // LLM client that will fail immediately (no API key needed).
+    // This test exercises the function signature and error-path behavior.
+    let pool = Arc::new(make_test_pool());
+    let config: Box<dyn async_openai::config::Config> = Box::new(
+        async_openai::config::OpenAIConfig::new()
+            .with_api_base("http://[::1]:1"), // invalid port, immediate fail
+    );
+    let client = async_openai::Client::with_config(config);
+    let result = jadepaw_agent::run_agent(
+        jadepaw_core::AgentRequest::default(),
+        pool,
+        client,
+        "gpt-4",
+    )
+    .await;
+    // Expected to fail (connection refused), but function signature must compile
+    assert!(result.is_err(), "expected connection error");
 }
 
 // ── Test: run_agent with SSE streaming pipeline type-checks ─────────
