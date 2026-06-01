@@ -1086,7 +1086,9 @@ dependencies = [
  "jadepaw-core",
  "jadepaw-wasm",
  "redis",
+ "tempfile",
  "tokio",
+ "wat",
 ]
 
 [[package]]

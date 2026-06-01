@@ -13,6 +13,10 @@ tokio = { workspace = true }
 anyhow = "1.0"
 async-trait = "0.1"
 
+[dev-dependencies]
+wat = "1"
+tempfile = "3"
+
 [features]
 default = ["single-node"]
 single-node = []
