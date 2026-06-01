@@ -109,7 +109,9 @@ pub async fn run_agent(
     // Drop the sender so the SSE stream knows we're done
     drop(tx);
 
-    // Extract the final answer from the trace
+    // Extract the final answer from the trace.
+    // If no Finished step is present (e.g., agent was terminated by guard),
+    // return an error rather than silently producing an empty answer.
     let final_answer = trace
         .iter()
         .rev()
@@ -117,7 +119,14 @@ pub async fn run_agent(
             ReActStep::Finished { answer } => Some(answer.clone()),
             _ => None,
         })
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::WasmTrap {
+                    reason: "agent completed without producing a final answer".to_string(),
+                    turn: 0,
+                },
+            )
+        })?;
 
     Ok((
         AgentResponse {
