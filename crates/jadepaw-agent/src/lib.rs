@@ -87,14 +87,13 @@ pub async fn run_agent(
     // Create SSE channel for real-time step streaming
     let (tx, sse_stream) = stream::create_sse_channel();
 
-    let loop_config = r#loop::LoopConfig::default();
     let guard_config = guard::GuardConfig::default();
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
     // Run the agent loop under termination protection
     let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
-            &loop_config,
+            &guard_config,
             &mut handle,
             &llm_client,
             model,
@@ -143,5 +142,5 @@ pub use guard::{run_with_guard, GuardConfig};
 pub use llm::{
     REACT_SYSTEM_PROMPT, build_initial_messages, parse_next_action, stream_llm_response,
 };
-pub use r#loop::{react_loop, LoopConfig};
+pub use r#loop::react_loop;
 pub use stream::create_sse_channel;

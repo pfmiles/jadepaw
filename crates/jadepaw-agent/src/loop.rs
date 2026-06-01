@@ -19,22 +19,8 @@ use jadepaw_core::ReActStep;
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
 
+use crate::guard::GuardConfig;
 use crate::llm::{self, LlmDirective};
-
-/// Configuration for a ReAct loop execution.
-#[derive(Clone)]
-pub struct LoopConfig {
-    /// Maximum number of think-act-observe iterations.
-    pub max_iterations: u32,
-}
-
-impl Default for LoopConfig {
-    fn default() -> Self {
-        Self {
-            max_iterations: 20,
-        }
-    }
-}
 
 /// Execute the ReAct loop for a single agent session.
 ///
@@ -58,7 +44,7 @@ impl Default for LoopConfig {
 /// - All iterations are exhausted without a finish signal
 /// - The output channel is closed
 pub async fn react_loop(
-    config: &LoopConfig,
+    guard_config: &GuardConfig,
     session: &mut SessionHandle,
     llm_client: &Client<Box<dyn Config>>,
     model: &str,
@@ -73,7 +59,7 @@ pub async fn react_loop(
     let mut messages: Vec<ChatCompletionRequestMessage> =
         llm::build_initial_messages(system_prompt, user_message, context);
 
-    for turn in 0..config.max_iterations {
+    for turn in 0..guard_config.max_iterations {
         // Per-turn fuel reset (D-10 Pitfall 3)
         session
             .store_mut()
@@ -179,6 +165,6 @@ pub async fn react_loop(
 
     anyhow::bail!(
         "max iterations ({}) reached without completion",
-        config.max_iterations
+        guard_config.max_iterations
     )
 }
