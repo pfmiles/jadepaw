@@ -96,7 +96,14 @@ impl fmt::Display for JadepawError {
     }
 }
 
-impl std::error::Error for JadepawError {}
+impl std::error::Error for JadepawError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // JadepawError variants are self-contained with string descriptions.
+        // No chained source errors at this level. If future variants wrap
+        // other error types, add matching arms here.
+        None
+    }
+}
 
 /// Convenience type alias that uses `JadepawError`.
 pub type Result<T> = std::result::Result<T, JadepawError>;
