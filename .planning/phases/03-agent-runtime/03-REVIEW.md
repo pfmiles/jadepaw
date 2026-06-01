@@ -1,10 +1,9 @@
 ---
 phase: 03-agent-runtime
-reviewed: 2026-06-02T08:00:00Z
+reviewed: 2026-06-02T12:00:00Z
 depth: standard
-files_reviewed: 49
+files_reviewed: 16
 files_reviewed_list:
-  - Cargo.lock
   - Cargo.toml
   - crates/jadepaw-agent/Cargo.toml
   - crates/jadepaw-agent/src/guard.rs
@@ -17,236 +16,164 @@ files_reviewed_list:
   - crates/jadepaw-agent/tests/termination.rs
   - crates/jadepaw-core/Cargo.toml
   - crates/jadepaw-core/src/agent_types.rs
-  - crates/jadepaw-core/src/capabilities.rs
   - crates/jadepaw-core/src/error.rs
   - crates/jadepaw-core/src/guest_exports.rs
-  - crates/jadepaw-core/src/host_functions.rs
   - crates/jadepaw-core/src/lib.rs
-  - crates/jadepaw-core/src/types.rs
   - crates/jadepaw-core/tests/agent_types.rs
-  - crates/jadepaw-core/tests/capabilities.rs
-  - crates/jadepaw-core/tests/host_functions.rs
-  - crates/jadepaw-core/tests/types.rs
-  - crates/jadepaw-wasm/Cargo.toml
-  - crates/jadepaw-wasm/src/capability/mod.rs
-  - crates/jadepaw-wasm/src/engine.rs
-  - crates/jadepaw-wasm/src/epoch.rs
-  - crates/jadepaw-wasm/src/host/filesystem.rs
-  - crates/jadepaw-wasm/src/host/logging.rs
-  - crates/jadepaw-wasm/src/host/mod.rs
-  - crates/jadepaw-wasm/src/host/network.rs
-  - crates/jadepaw-wasm/src/lib.rs
-  - crates/jadepaw-wasm/src/limits/instance_hard.rs
-  - crates/jadepaw-wasm/src/limits/mod.rs
-  - crates/jadepaw-wasm/src/limits/tenant_quota.rs
-  - crates/jadepaw-wasm/src/linker.rs
-  - crates/jadepaw-wasm/src/path.rs
-  - crates/jadepaw-wasm/src/pool.rs
-  - crates/jadepaw-wasm/src/session.rs
-  - crates/jadepaw-wasm/tests/capability.rs
-  - crates/jadepaw-wasm/tests/engine_smoke.rs
-  - crates/jadepaw-wasm/tests/epoch_yield.rs
-  - crates/jadepaw-wasm/tests/fixtures/noop.wat
-  - crates/jadepaw-wasm/tests/fixtures/tool_caller.wat
-  - crates/jadepaw-wasm/tests/limits.rs
-  - crates/jadepaw-wasm/tests/path_validation.rs
-  - crates/jadepaw-wasm/tests/pool.rs
-  - crates/jadepaw-wasm/tests/stress_concurrent.rs
-  - docs/architecture.md
 findings:
   critical: 0
-  warning: 4
-  info: 5
-  total: 9
+  warning: 3
+  info: 3
+  total: 6
 status: issues_found
 ---
 
 # Phase 03: Code Review Report
 
-**Reviewed:** 2026-06-02T08:00:00Z
+**Reviewed:** 2026-06-02T12:00:00Z
 **Depth:** standard
-**Files Reviewed:** 49
+**Files Reviewed:** 16
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the full Phase 03 agent runtime implementation: `jadepaw-agent` (ReAct loop, LLM integration, SSE streaming, termination guards), `jadepaw-core` (shared types, error types, guest exports, capabilities), and `jadepaw-wasm` (engine, pool, session, host functions, resource limits, path validation). The code compiles cleanly with zero warnings.
+Re-reviewed the Phase 03 agent runtime implementation after prior fix iteration. All four previously-reported warnings (WR-01 through WR-04 from review iteration 1) have been correctly addressed: unused dependencies removed, `GuardConfig` is now borrowed, `TenantQuotaLimiter` carries a deferred-wiring doc comment, and the `new_with_budget` doc has been corrected.
 
-The previous review's critical findings (CR-01: indiscriminate WasmTrap catch-all and CR-02: sub-second timeout truncation) have been properly addressed — the code now uses `InfrastructureError` for LLM/channel errors and `WallClockTimeout` with millisecond-precision fields. The structural findings (WR-01: missing thought in trace, WR-02: unscoped directive search, WR-03: dead test) have also been fixed.
-
-No new critical issues were found. Four warnings cover: `TenantQuotaLimiter` defined but never wired into the pool infrastructure, unused dependencies in `jadepaw-agent/Cargo.toml`, `GuardConfig` taken by value preventing reuse across sessions, and the `new_with_budget` constructor having a misleading doc comment. Five informational items cover: outdated `async_support` doc comment, `context` parameter only applied to first turn, `log_message` missing debug/trace level routing, `domain_matches` limitations for internal wildcards, and `normalize_path` using a sentinel value for over-long paths.
+No critical (blocker) issues were found. Three new warnings are identified: a configuration divergence risk between `LoopConfig.max_iterations` and `GuardConfig.max_iterations`, silent serialization failure in SSE event production via `.unwrap_or_default()`, and fragile string-based error classification in the termination guard. Three informational items cover unreachable dead code, redundant configuration, and clock-start semantics.
 
 ---
 
 ## Warnings
 
-### WR-01: `TenantQuotaLimiter` defined and exported but never wired into pool/session infrastructure
+### WR-01: `LoopConfig.max_iterations` and `GuardConfig.max_iterations` are independent sources of truth enabling divergence
 
-**File:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs` (entire module), `crates/jadepaw-wasm/src/session.rs:24-27`
-**Issue:** `TenantQuotaLimiter` is a fully-implemented `ResourceLimiter` with correct delegation semantics, but it is never instantiated in production code. `SessionLimits` only contains an `InstanceHardLimiter` (`session.rs:26`). The `store.limiter()` closure in `pool.rs:214` only provides the hard limiter: `store.limiter(|s| &mut s.limits.hard_limit)`. No code path wraps `InstanceHardLimiter` in a `TenantQuotaLimiter`. This means tenant-level aggregate budget enforcement is completely absent — every instance operates independently with only the per-instance 64MB cap.
+**File:** `crates/jadepaw-agent/src/lib.rs:90-91`, `crates/jadepaw-agent/src/guard.rs:24,71-72`, `crates/jadepaw-agent/src/loop.rs:28,76,182`
+**Issue:** `run_agent()` constructs `LoopConfig::default()` and `GuardConfig::default()` independently (lib.rs:90-91), both with `max_iterations: 20`. The `LoopConfig.max_iterations` controls the actual loop termination (`for turn in 0..config.max_iterations` at loop.rs:76), while `GuardConfig.max_iterations` is only used to populate the `max` field in the `MaxIterationsReached` error variant (guard.rs:71). There is no mechanism to ensure these two values stay synchronized. If a caller changes only one — for example, setting `LoopConfig { max_iterations: 10 }` while leaving `GuardConfig::default()` — the loop would actually stop at turn 10, but the error report would claim `max: 20`. Conversely, setting `GuardConfig { max_iterations: 10, .. }` with `LoopConfig::default()` would report `max: 10` in errors while the loop runs for 20 turns.
 
-**Fix:** Either wire `TenantQuotaLimiter` into `SessionLimits` with a default-unlimited budget, or explicitly document that this is deferred to a later phase. For an immediate fix, the `SessionLimits` struct could store an `Option<TenantQuotaLimiter>`:
+**Fix:** There are two reasonable approaches:
 
+Option A — Eliminate `LoopConfig` and have `react_loop` use `GuardConfig.max_iterations` directly:
 ```rust
-// session.rs
-pub struct SessionLimits {
-    pub hard_limit: InstanceHardLimiter,
-    pub tenant_quota: Option<TenantQuotaLimiter>,
+// lib.rs: remove LoopConfig construction, pass guard_config to react_loop
+pub async fn run_agent(...) -> ... {
+    let guard_config = guard::GuardConfig::default();
+    // ...
+    let trace = guard::run_with_guard(&guard_config, || {
+        r#loop::react_loop(
+            &guard_config,   // GuardConfig carries max_iterations
+            &mut handle,
+            // ...
+        )
+    }).await?;
 }
 ```
 
-Alternatively, if tenant quotas are truly deferred, add a doc comment on the module:
+Option B — Have `GuardConfig` reference `LoopConfig` and delegate:
 ```rust
-//! Note: TenantQuotaLimiter is implemented and tested but not yet wired
-//! into the InstancePool/SessionState infrastructure. It will be activated
-//! when per-tenant aggregate memory tracking is needed (Phase 4).
-```
-
-### WR-02: Unused dependencies in `jadepaw-agent/Cargo.toml`
-
-**File:** `crates/jadepaw-agent/Cargo.toml:10,19,29-33`
-**Issue:** Three declared dependencies have no corresponding usage in any source file under `crates/jadepaw-agent/src/`:
-- `jadepaw-bus` (line 10) — planned for Phase 3+ but not yet imported
-- `async-trait` (line 19) — no `#[async_trait]` usage anywhere in the agent crate
-- `redis` (lines 29-33, optional) — no redis code paths exist in the agent crate
-
-Declaring dependencies before they are used adds unnecessary compilation overhead, increases attack surface for `cargo-audit`, and makes dependency auditing harder. The `redis` feature is especially problematic since it defines features (`single-node`, `cluster`, `redis`) that have no behavioral effect.
-
-**Fix:** Remove `jadepaw-bus`, `async-trait`, and the redis feature block from `jadepaw-agent/Cargo.toml`. Add them back when the implementing code is committed:
-```diff
-- jadepaw-bus = { path = "../jadepaw-bus" }
-- async-trait = "0.1"
-- 
-- [features]
-- default = ["single-node"]
-- single-node = []
-- cluster = ["redis"]
-- redis = ["dep:redis"]
-- 
-- [dependencies.redis]
-- workspace = true
-- optional = true
-```
-
-### WR-03: `GuardConfig` consumed by value in `run_with_guard`, preventing reuse
-
-**File:** `crates/jadepaw-agent/src/guard.rs:47-48`, `crates/jadepaw-agent/src/lib.rs:91,95`
-**Issue:** `run_with_guard` takes `config: GuardConfig` by value, which moves ownership. In `run_agent` (lib.rs:91,95), `guard_config` is created inline and passed directly, so it works for a single call. However, for a production server processing thousands of concurrent requests, the same `GuardConfig` would ideally be shared across all sessions. Taking by value forces unnecessary cloning or per-call construction.
-
-**Fix:** Change to borrow, matching the pattern used by `LoopConfig` (also constructed inline but could benefit from sharing):
-```rust
-// guard.rs:47
-pub async fn run_with_guard<F, Fut>(
-    config: &GuardConfig,  // borrowed instead of owned
-    agent_loop: F,
-) -> Result<Vec<ReActStep>, JadepawError>
-
-// guard.rs:55
-tokio::select! {
-    result = agent_loop() => { ... }
-    _ = tokio::time::sleep(config.wall_clock_timeout) => { ... }
-}
-```
-
-Note: `tokio::time::sleep` takes `Duration` by value (Copy), so borrowing `config` still works correctly for the timeout branch.
-
-### WR-04: `TenantQuotaLimiter::new_with_budget` doc comment is misleading
-
-**File:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs:55-63`
-**Issue:** The `new_with_budget` method's doc comment says "Lower-level constructor that accepts a pre-measured budget in bytes", but its signature takes `budget_max_mb: u32` (megabytes), not bytes. Internally it simply delegates to `Self::new()`, making it a pure alias. The comment is misleading because it suggests the method accepts bytes when it actually accepts megabytes.
-
-**Fix:** Either update the comment or remove the method entirely (it's only used in tests and the tests could call `TenantQuotaLimiter::new()` directly):
-```rust
-/// Convenience alias for `new()`. Used primarily in tests to clarify intent
-/// when constructing limiters with small byte-scale budgets.
-#[doc(hidden)]
-pub fn new_with_budget(
-    budget_max_mb: u32,
-    tenant_budget_used: Arc<AtomicUsize>,
-    inner: InstanceHardLimiter,
-) -> Self {
-    Self::new(budget_max_mb, tenant_budget_used, inner)
-}
-```
-
----
-
-## Info
-
-### IN-01: Outdated doc comment references deprecated `async_support(true)`
-
-**File:** `crates/jadepaw-wasm/src/engine.rs:13`
-**Issue:** The module doc header states that the Engine configuration includes `async_support(true)`, but this method is deprecated in wasmtime 45.0 (it is a no-op since async is always supported when the `async` feature is enabled). The code correctly does NOT call it. The comment is misleading to readers who might wonder why it's mentioned but not called.
-
-**Fix:** Update line 13:
-```rust
-//! - Async support is built-in (wasmtime 45.0+; no explicit `async_support` call needed)
-```
-
-### IN-02: `context` parameter only applied to initial messages, not re-injected per turn
-
-**File:** `crates/jadepaw-agent/src/loop.rs:72-74`
-**Issue:** The `context` (e.g., skill instructions, system context) is embedded in the initial user message via `build_initial_messages()` but is never re-injected into the conversation history in subsequent turns. On Turn 2+, the LLM sees only `{system_prompt, user_message_with_context, assistant_msgs...}`. As the conversation grows, the initial context may lose prominence relative to more recent assistant messages. This is a design choice for v1 but should be documented.
-
-**Fix:** Update the `react_loop` doc comment to clarify this behavior:
-```rust
-/// - `context` is embedded in the first user message only (not re-injected
-///   each turn). For long-running agent sessions, skill instructions carried
-///   in the system_prompt are preferred over context for persistent guidance.
-```
-
-### IN-03: `log_message` host function silently maps `debug`/`trace` levels to `info`
-
-**File:** `crates/jadepaw-wasm/src/host/logging.rs:95-99`
-**Issue:** The level routing match only handles `"error"` and `"warn"`. All other level strings — including `"debug"`, `"trace"`, `"off"`, and any guest-side typos — fall through to `info!`. This means a guest that intentionally logs at `"debug"` level to reduce noise will still emit `info`-level events in production, potentially inflating log volume.
-
-**Fix:** Add `"debug"` and `"trace"` routing arms, and emit a warning for unrecognized levels:
-```rust
-match level {
-    "error" => error!(%session_id, "guest: {}", message),
-    "warn" => warn!(%session_id, "guest: {}", message),
-    "info" => info!(%session_id, "guest: {}", message),
-    "debug" => debug!(%session_id, "guest: {}", message),
-    "trace" => trace!(%session_id, "guest: {}", message),
-    unknown => {
-        warn!(%session_id, "guest used unrecognized log level '{}', defaulting to info", unknown);
-        info!(%session_id, "guest: {}", message);
+// guard.rs
+impl GuardConfig {
+    pub fn from_loop_config(loop_config: &LoopConfig, wall_clock_timeout: Duration) -> Self {
+        Self { max_iterations: loop_config.max_iterations, wall_clock_timeout }
     }
 }
 ```
 
-### IN-04: `domain_matches` internal wildcard limitations not documented
+Option A is simpler since `LoopConfig` currently only carries `max_iterations` (making it a redundant wrapper). If future loop configuration fields are planned, Option B provides better separation of concerns.
 
-**File:** `crates/jadepaw-wasm/src/capability/mod.rs:98-124`
-**Issue:** The `domain_matches` method only supports `*` as a bare wildcard (`"*"`) or as a prefix wildcard (`"*.example.com"`). A pattern like `"api.*.com"` or `"*.svc.*.internal"` would not match because internal `*` segments are not processed. `DomainPattern` accepts arbitrary strings, so a user could configure an unsupported pattern and get unexpected denials.
+### WR-02: `serde_json::to_string` with `.unwrap_or_default()` silently swallows serialization failures in SSE event production
 
-**Fix:** Add a doc comment to `DomainPattern` documenting the supported pattern syntax:
+**File:** `crates/jadepaw-agent/src/stream.rs:59-63, 69-74, 77-82`
+**Issue:** Three SSE event constructors map `serde_json::to_string(...).unwrap_or_default()` to produce event data. If `serde_json::to_string` returns `Err` — which can happen for non-finite float values (`NaN`, `Infinity`), deeply nested structures exceeding `serde_json` depth limits, or custom serializer failures — the result is an empty `String`, producing an SSE event with empty `data:` payload. The caller (SSE consumer) receives a valid-looking event that silently carries no information, rather than being notified of the failure. The `ReActStep::Action.args` field is `serde_json::Value`, which in theory can carry arbitrary JSON including non-finite numbers; if such a value enters the system (e.g., from an LLM that returns a tool argument with `NaN`), the error would be silently swallowed.
+
+**Fix:** Emit a JSON error payload on serialization failure so the SSE consumer is aware something went wrong:
 ```rust
-/// Supported patterns:
-/// - `"*"` — matches any domain
-/// - `"*.example.com"` — matches single-subdomain wildcards (e.g., `api.example.com`)
-/// - `"exact.domain.com"` — exact match only
-///
-/// Note: internal wildcards (e.g., `"api.*.com"`) are not yet supported.
-/// Multi-level subdomain matching requires multiple patterns.
+// stream.rs, in the Action mapping arm:
+ReActStep::Action { tool, args } => {
+    let payload = serde_json::to_string(&serde_json::json!({
+        "tool": tool,
+        "args": args,
+    }))
+    .unwrap_or_else(|e| {
+        serde_json::json!({
+            "tool": tool,
+            "error": "failed to serialize tool args",
+            "serialization_error": e.to_string(),
+        })
+        .to_string()
+    });
+    Event::default().event("action").data(payload)
+}
 ```
 
-### IN-05: `normalize_path` uses `PathBuf::from("..")` as sentinel for over-long paths
-
-**File:** `crates/jadepaw-wasm/src/path.rs:44-47`
-**Issue:** When a guest path exceeds `MAX_PATH_LEN` (4096 bytes), `normalize_path` returns `PathBuf::from("..")` as a sentinel. The sentinel causes `validate_sandbox_path` to fail the prefix check (correctly rejecting the operation), but the sentinel value does not carry any information about the original over-long path. Operators debugging "path validation failed" errors in logs would see `..` as the rejected path rather than the actual (truncation-worthy) guest input. Fortunately `validate_sandbox_path` does log the original guest path in the error message (`guest_path.to_string()` is the full input), so this is adequate for troubleshooting. The sentinel pattern is unusual but functionally correct.
-
-**Fix:** No code change needed — consider adding a comment to the sentinel return noting that the original path is logged by `validate_sandbox_path`:
+Alternatively, since `serde_json::Value` serialization should be infallible under normal circumstances, wrap in a defensive `debug_assert!` that fails in tests but logs a warning in production:
 ```rust
-if path.len() > MAX_PATH_LEN {
-    // Sentinel: causes validate_sandbox_path to reject. The caller
-    // (validate_sandbox_path) logs the original untruncated guest_path.
-    return PathBuf::from("..");
+let payload = match serde_json::to_string(&serde_json::json!({...})) {
+    Ok(s) => s,
+    Err(e) => {
+        tracing::error!("failed to serialize SSE event data: {e}");
+        String::new()
+    }
+};
+```
+
+### WR-03: Error classification in `run_with_guard` uses fragile string matching on `anyhow` error messages that may contain arbitrary downstream text
+
+**File:** `crates/jadepaw-agent/src/guard.rs:57-103`
+**Issue:** The error classification logic in `run_with_guard` calls `e.to_string()` (line 58) and then uses `.contains()` to check for substrings: `"max iterations"` (line 67), `"LLM call failed"` (line 74), and `"output channel closed"` (line 84). The `e` is an `anyhow::Error`, and `to_string()` renders the full error chain. The LLM error path (loop.rs:93) wraps downstream errors with `with_context(|| format!("LLM call failed on turn {}", turn))`. The resulting display includes the context chain: `"LLM call failed on turn 3: <original error>"`. If the downstream error (from async-openai, the HTTP client, or the remote API) happens to contain the substring `"max iterations"` — plausible for API rate-limit errors like `"Rate limit exceeded: max iterations per minute reached"` — the guard would misclassify an LLM/infrastructure error as `MaxIterationsReached`. Similarly, a provider error message containing `"LLM call failed"` or `"output channel closed"` (from nested contexts) could cause misclassification between `InfrastructureError` and `WasmTrap`.
+
+**Fix:** Use structured error types instead of string matching. A minimal change is to use `anyhow`'s `.downcast_ref::<ErrorType>()` or chain inspection. A more robust approach is to define an internal error enum and map it explicitly:
+
+```rust
+// New internal error type in loop.rs or a shared location
+#[derive(Debug)]
+enum LoopErrorKind {
+    MaxIterations { iter: u32, max: u32 },
+    LlmFailure { turn: u32, source: anyhow::Error },
+    ChannelClosed { turn: u32 },
 }
+
+// In react_loop, wrap errors with a known type
+anyhow::bail!(LoopErrorKind::MaxIterations { iter: *turn, max: config.max_iterations });
+
+// In guard.rs, downcast to inspect
+match e.downcast_ref::<LoopErrorKind>() {
+    Some(LoopErrorKind::MaxIterations { max, .. }) => { ... }
+    Some(LoopErrorKind::LlmFailure { turn, .. }) => { ... }
+    Some(LoopErrorKind::ChannelClosed { .. }) => { ... }
+    None => { /* unknown error -> WasmTrap */ }
+}
+```
+
+## Info
+
+### IN-01: Dead error-path code in `run_agent` final answer extraction
+
+**File:** `crates/jadepaw-agent/src/lib.rs:115-129`
+**Issue:** The `.ok_or_else()` fallback on `final_answer` extraction (lines 121-129) creates an `InfrastructureError` with the message "agent completed without producing a final answer". This code path is unreachable. Every execution path through `react_loop` either returns `Ok(trace)` containing at least one `ReActStep::Finished` step, or returns `Err`. Since `run_with_guard` propagates the `Err` via the `?` operator on line 107, control only reaches line 115 when the guard call returned `Ok(trace)`. In that case, `trace` always contains a `Finished` step (it is inserted by `react_loop` at loop.rs:112-118 on the `LlmDirective::Finish` branch before `return Ok(trace)`). The fallback is dead code and creates a false impression that the agent can complete without a final answer.
+
+**Fix:** Either replace `.ok_or_else()` with `.expect("react_loop invariant: trace must contain a Finished step on Ok return")` to document the invariant, or remove the fallback entirely if the type system can encode the guarantee.
+
+### IN-02: `GuardConfig.max_iterations` is redundant — never enforced by the guard, only used in error display
+
+**File:** `crates/jadepaw-agent/src/guard.rs:24,71-72`
+**Issue:** The `GuardConfig.max_iterations` field is declared and stored but the `run_with_guard` function never compares any iteration count against it. The guard only races against wall-clock timeout. The iteration limit is enforced entirely inside `react_loop` via `LoopConfig.max_iterations` (loop.rs:76). `GuardConfig.max_iterations` is only read on line 71 to populate the `max` field in `AgentTerminationReason::MaxIterationsReached`. This makes `GuardConfig` carry a value it does not use for enforcement, creating a misleading API surface where callers might expect `GuardConfig` to enforce the limit.
+
+**Fix:** See WR-01 fix above. The clean resolution is to make `GuardConfig` not carry a `max_iterations` field at all, and have the loop report its own max value in the error. If the error classification used structured types (see WR-03 fix), the loop could directly set the `max` field from `LoopConfig.max_iterations` without involving `GuardConfig`.
+
+### IN-03: Wall-clock timeout clock starts before closure execution, consuming setup time from the agent budget
+
+**File:** `crates/jadepaw-agent/src/guard.rs:55,107`
+**Issue:** `tokio::select!` starts the `sleep(config.wall_clock_timeout)` timer at the moment `run_with_guard` is called (line 55), which is the same moment the closure `agent_loop` is invoked. However, `agent_loop` calls `react_loop` which calls `session.store_mut().set_fuel()` and `llm::stream_llm_response()` only after invocation. Any time spent in closure execution setup, session acquisition, or other pre-loop operations burns into the wall-clock budget. The design doc (D-08) explicitly states "Wall-clock timeout cannot be reset or extended by any code path", which means this behavior is intentional. However, in the current `run_agent` implementation (lib.rs:73-85), session acquisition happens *before* `run_with_guard` is called, so the guard only covers the loop execution itself. If a future caller interleaves setup work between the closure start and the actual loop body, the timer would be counting against that work.
+
+**Fix:** No code change needed — the behavior matches the documented design. Consider adding a brief comment noting the timer semantics:
+```rust
+/// The wall-clock timeout starts when `run_with_guard` is called, not when
+/// the inner loop body begins. Callers should complete session acquisition
+/// and setup before invoking this function.
 ```
 
 ---
 
-_Reviewed: 2026-06-02T08:00:00Z_
+_Reviewed: 2026-06-02T12:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
