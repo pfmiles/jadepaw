@@ -10,6 +10,9 @@ jadepaw-wasm = { path = "../jadepaw-wasm" }
 jadepaw-bus = { path = "../jadepaw-bus" }
 async-openai = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = "0.1"
+futures = "0.3"
+serde_json = { workspace = true }
 anyhow = "1.0"
 async-trait = "0.1"
 

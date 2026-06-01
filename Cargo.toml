@@ -41,7 +41,7 @@ dashmap = "6"
 
 # LLM (Phase 3+; defined here for forward reference. D-05: providers remain
 # runtime via Box<dyn Config>, NOT compile-time feature flags.)
-async-openai = "0.40"
+async-openai = { version = "0.40", features = ["chat-completion"] }
 
 [profile.release]
 lto = "fat"
