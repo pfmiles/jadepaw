@@ -119,8 +119,9 @@ where
 /// Attempt to extract a turn number from a loop error message.
 ///
 /// The loop uses `anyhow` error messages containing "on turn N". This
-/// function parses that pattern and returns the turn number, defaulting
-/// to 0 if the turn cannot be determined.
+/// function parses that pattern and returns the turn number. Returns
+/// 0 if the turn cannot be determined (callers should note that 0 is
+/// ambiguous between "error on turn 0" and "turn could not be parsed").
 fn extract_turn_from_error(err_msg: &str) -> u32 {
     // Look for "on turn <N>" pattern in the error message
     if let Some(turn_pos) = err_msg.find("on turn ") {
