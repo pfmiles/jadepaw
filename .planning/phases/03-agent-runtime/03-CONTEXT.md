@@ -40,7 +40,6 @@ This phase builds the intelligent reasoning layer on top of Phase 2's Wasm isola
 - **D-08:** Host-level termination via `tokio::select!` in `jadepaw-agent/src/guard.rs`. Three futures race: agent loop completion, iteration counter (default 20), wall-clock timeout (default 5 minutes). First to trigger cancels the others.
 - **D-09:** `JadepawError` in `jadepaw-core` gains an `AgentTerminationReason` enum with variants: `MaxIterationsReached { iter: u32, max: u32 }`, `WallClockTimeout { elapsed: Duration, max: Duration }`, `WasmTrap { reason: String, turn: u32 }`.
 - **D-10:** Phase 2 Wasm-level protection (fuel 1M/turn, epoch ~1ms, 64MB hard cap) remains unchanged and covers single-turn instruction explosion. Host guards cover cross-turn iteration and hang protection. Layered: Wasm = security boundary, Host = policy boundary.
-- **D-11:** Per-turn LLM/tool call timeout (`tokio::time::timeout` wrapping individual calls) is deferred — can be added as a layer on top of D-08 if profiling reveals LLM hang scenarios not covered by the global timeout.
 
 ### Invocation API
 - **D-12:** Request/response types live in `jadepaw-core`: `AgentRequest` (session_id, user_message, context), `AgentResponse` (final_answer, trace), `ReActStep` enum (Thought, Action, Observation, Error). Pure data structures, serde-serializable, no wasmtime dependency.

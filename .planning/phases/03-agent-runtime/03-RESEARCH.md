@@ -602,22 +602,22 @@ async fn run_with_timeout() -> Result<String, AgentTerminationReason> {
 | A4 | `futures::StreamExt::next()` is the right way to iterate `ChatCompletionResponseStream`. | Code Examples | LOW -- `StreamResponse<T>` is `Pin<Box<dyn Stream<...>>>` and `StreamExt` provides `next()`. Standard pattern. |
 | A5 | `tokio::select!` correctly cancels the non-winning futures. | Pitfalls | LOW -- tokio documentation confirms this. `select!` drops (and thus cancels) the futures that did not complete first. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **How should tool dispatch work in MVP (before Phase 4 Tool System)?**
+1. **How should tool dispatch work in MVP (before Phase 4 Tool System)?** (RESOLVED)
    - What we know: AGENT-01 requires the agent to "autonomously select and call tools to complete tasks." But the tool system (MCP protocol, tool registry) is Phase 4. No tools exist in Phase 3.
    - What's unclear: How does the agent "act" without any registered tools? Does it just think and respond without acting? Or is there a minimal built-in tool (e.g., echo/debug)?
-   - Recommendation: For AGENT-01 MVP, the ReAct loop should support the full think-act-observe cycle structurally, but the initial tool registry can be empty or contain a single `echo` tool. The "tool call" path in the loop dispatches to the guest Wasm instance's exports, which for now may be no-ops. The structural support for tools should be in place so Phase 4 adds tools, not loop infrastructure.
+   - RESOLVED: The ReAct loop supports the full think-act-observe cycle structurally, but the initial tool registry is empty. The "tool call" path in the loop dispatches to the guest Wasm instance's exports, which for now may be no-ops. The structural support for tools is in place so Phase 4 adds tools, not loop infrastructure.
 
-2. **What is the initial system prompt for the ReAct agent?**
+2. **What is the initial system prompt for the ReAct agent?** (RESOLVED)
    - What we know: The LLM needs a system prompt that instructs it to follow the ReAct pattern (think -> act -> observe). The prompt format depends on the model.
    - What's unclear: Should the prompt be hardcoded in jadepaw-agent source, or loaded from a config file? How configurable should it be at MVP?
-   - Recommendation: Start with a hardcoded constant in `llm.rs` for MVP. It can be moved to a config source (SKILL.md or tenant config) in Phase 6. The default prompt should instruct the model to reason step-by-step, optionally call tools, and produce a final answer.
+   - RESOLVED: Start with a hardcoded constant `REACT_SYSTEM_PROMPT` in `llm.rs` for MVP. It can be moved to a config source (SKILL.md or tenant config) in Phase 6. The default prompt instructs the model to reason step-by-step, optionally call tools, and produce a final answer.
 
-3. **How does the agent loop integrate with the axum server (Phase 7)?**
+3. **How does the agent loop integrate with the axum server (Phase 7)?** (RESOLVED)
    - What we know: D-07 says SSE tokens flow through `ChatCompletionStream -> tokio channel -> axum SSE response`. D-13 says `run_agent()` is a function.
    - What's unclear: In Phase 3 MVP, is there an actual HTTP endpoint, or is the interface purely programmatic (`run_agent()` called from tests)? If no server yet, the SSE relay is tested via the channel directly.
-   - Recommendation: Phase 3 MVP should be callable programmatically (test harness per success criterion 5). The SSE relay infrastructure (mpsc channel, ReceiverStream) should be built and testable without an axum server. Phase 7 adds the HTTP endpoint that wires the stream to axum Sse. The `stream.rs` module exposes the channel so tests can verify streaming behavior.
+   - RESOLVED: Phase 3 MVP is callable programmatically (test harness per success criterion 5). The SSE relay infrastructure (mpsc channel, ReceiverStream) is built and testable without an axum server. Phase 7 adds the HTTP endpoint that wires the stream to axum Sse. The `stream.rs` module exposes `create_sse_channel()` so tests can verify streaming behavior via the channel receiver.
 
 ## Environment Availability
 
