@@ -1219,13 +1219,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-openai",
- "async-trait",
  "axum",
  "futures",
- "jadepaw-bus",
  "jadepaw-core",
  "jadepaw-wasm",
- "redis",
  "serde_json",
  "tempfile",
  "tokio",
