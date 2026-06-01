@@ -136,8 +136,8 @@ fn termination_reason_display_max_iterations() {
 #[test]
 fn termination_reason_display_wall_clock_timeout() {
     let reason = AgentTerminationReason::WallClockTimeout {
-        elapsed_secs: 300,
-        max_secs: 300,
+        elapsed_ms: 300_000,
+        max_ms: 300_000,
     };
     let s = reason.to_string();
     assert!(s.contains("timed out"), "expected 'timed out' in: {s}");
