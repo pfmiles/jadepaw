@@ -45,7 +45,7 @@ impl Default for GuardConfig {
 /// - `F`: A closure that returns the agent loop future
 /// - `Fut`: The agent loop future, which returns the execution trace
 pub async fn run_with_guard<F, Fut>(
-    config: GuardConfig,
+    config: &GuardConfig,
     agent_loop: F,
 ) -> Result<Vec<ReActStep>, JadepawError>
 where

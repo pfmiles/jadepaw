@@ -23,7 +23,7 @@ fn guard_config_default_values() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_guard_loop_completes() {
     let config = GuardConfig::default();
-    let result = run_with_guard(config, || async {
+    let result = run_with_guard(&config, || async {
         Ok(vec![])
     })
     .await;
@@ -39,7 +39,7 @@ async fn run_with_guard_wall_clock_timeout() {
         max_iterations: 20,
         wall_clock_timeout: Duration::from_millis(50),
     };
-    let result = run_with_guard(config, || async {
+    let result = run_with_guard(&config, || async {
         // Sleep longer than the timeout — should be interrupted
         tokio::time::sleep(Duration::from_secs(999)).await;
         Ok(vec![])
@@ -68,7 +68,7 @@ async fn run_with_guard_timeout_value_propagated() {
         max_iterations: 20,
         wall_clock_timeout: Duration::from_millis(10),
     };
-    let result = run_with_guard(config, || async {
+    let result = run_with_guard(&config, || async {
         tokio::time::sleep(Duration::from_secs(999)).await;
         Ok(vec![])
     })
@@ -93,7 +93,7 @@ async fn run_with_guard_timeout_value_propagated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_with_guard_maps_loop_error_to_wasm_trap() {
     let config = GuardConfig::default();
-    let result = run_with_guard(config, || async {
+    let result = run_with_guard(&config, || async {
         anyhow::bail!("test error from loop")
     })
     .await;

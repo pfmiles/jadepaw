@@ -92,7 +92,7 @@ pub async fn run_agent(
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
     // Run the agent loop under termination protection
-    let trace = guard::run_with_guard(guard_config, || {
+    let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
             &loop_config,
             &mut handle,
