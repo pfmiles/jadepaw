@@ -96,9 +96,12 @@ pub async fn react_loop(
         let thought = ReActStep::Thought {
             content: full_response.clone(),
         };
-        if tx.send(thought).await.is_err() {
+        if tx.send(thought.clone()).await.is_err() {
             anyhow::bail!("output channel closed on turn {}", turn);
         }
+        // Push thought to trace so all branches (Finish, Act, ContinueThinking)
+        // preserve the full reasoning context in the structured response.
+        trace.push(thought);
 
         // Parse the response for next action
         let action = llm::parse_next_action(&full_response);
