@@ -9,10 +9,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Agent Core
 
-- [ ] **AGENT-01**: Agent 支持 ReAct 执行循环（think → tool → observe → next），根据自然语言输入自主选择和调用工具完成任务
+- [x] **AGENT-01**: Agent 支持 ReAct 执行循环（think → tool → observe → next），根据自然语言输入自主选择和调用工具完成任务
 - [ ] **AGENT-02**: 支持工具/函数调用，工具通过 MCP 兼容协议注册，MVP 至少支持文件读写和 HTTP 请求
-- [ ] **AGENT-03**: 流式输出（token 级 SSE），用户实时看到 Agent 思考和执行进展
-- [ ] **AGENT-04**: Agent 执行循环具备基础终止防护：最大迭代次数限制 + 超时限制
+- [x] **AGENT-03**: 流式输出（token 级 SSE），用户实时看到 Agent 思考和执行进展
+- [x] **AGENT-04**: Agent 执行循环具备基础终止防护：最大迭代次数限制 + 超时限制
 
 ### Memory
 
@@ -106,10 +106,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AGENT-01 | Phase 3: Agent Runtime | Pending |
+| AGENT-01 | Phase 3: Agent Runtime | Complete |
 | AGENT-02 | Phase 4: Tool System | Pending |
-| AGENT-03 | Phase 3: Agent Runtime | Pending |
-| AGENT-04 | Phase 3: Agent Runtime | Pending |
+| AGENT-03 | Phase 3: Agent Runtime | Complete |
+| AGENT-04 | Phase 3: Agent Runtime | Complete |
 | MEM-01 | Phase 5: Session Memory | Pending |
 | MEM-02 | Phase 5: Session Memory | Pending |
 | SKILL-01 | Phase 6: Skill System | Pending |

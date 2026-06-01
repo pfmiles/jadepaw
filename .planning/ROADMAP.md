@@ -196,7 +196,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
-| 3. Agent Runtime | 2/2 | Complete   | 2026-06-01 |
+| 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
