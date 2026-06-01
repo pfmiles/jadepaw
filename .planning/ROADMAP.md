@@ -81,12 +81,12 @@ Plans:
   4. An agent that takes longer than the wall-clock timeout (configurable, default 5 minutes) is terminated with a timeout error message
   5. The agent can be invoked programmatically (API call or test harness) and returns structured results including the final answer and execution trace
 
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — Core types (AgentRequest, AgentResponse, ReActStep, AgentTerminationReason, GuestExports trait), ReAct loop skeleton, termination guards (tokio::select!), run_agent() entry point, unit tests
+- [x] 03-01-PLAN.md — Core types (AgentRequest, AgentResponse, ReActStep, AgentTerminationReason, GuestExports trait), ReAct loop skeleton, termination guards (tokio::select!), run_agent() entry point, unit tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -196,7 +196,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
-| 3. Agent Runtime | 0/2 | Planned | — |
+| 3. Agent Runtime | 1/2 | In Progress|  |
 | 4. Tool System | 0/? | Not started | — |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
