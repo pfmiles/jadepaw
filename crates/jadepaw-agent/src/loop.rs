@@ -96,7 +96,7 @@ pub async fn react_loop(
         let action = llm::parse_next_action(&full_response);
 
         match action {
-            LlmDirective::Finish { answer } => {
+            LlmDirective::Finish { thought: _, answer } => {
                 // Emit finished event
                 let finished = ReActStep::Finished {
                     answer: answer.clone(),
@@ -107,7 +107,7 @@ pub async fn react_loop(
                 trace.push(finished);
                 return Ok(trace);
             }
-            LlmDirective::Act { tool, args } => {
+            LlmDirective::Act { thought: _, tool, args } => {
                 // Emit action step
                 let action_step = ReActStep::Action {
                     tool: tool.clone(),
@@ -139,7 +139,7 @@ pub async fn react_loop(
                     .into();
                 messages.push(assistant_msg);
             }
-            LlmDirective::ContinueThinking => {
+            LlmDirective::ContinueThinking { thought: _ } => {
                 // Append the response to history and continue
                 let assistant_msg: ChatCompletionRequestMessage =
                     async_openai::types::chat::ChatCompletionRequestAssistantMessage::from(

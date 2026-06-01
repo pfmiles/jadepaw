@@ -55,6 +55,8 @@ Important: Use EXACTLY the format shown above. The THOUGHT section MUST come bef
 pub enum LlmDirective {
     /// The LLM wants to invoke a tool.
     Act {
+        /// The LLM's reasoning content from the THOUGHT section.
+        thought: String,
         /// Tool name.
         tool: String,
         /// Tool arguments as a raw string (caller may JSON-parse).
@@ -62,11 +64,16 @@ pub enum LlmDirective {
     },
     /// The LLM has produced a final answer.
     Finish {
+        /// The LLM's reasoning content from the THOUGHT section.
+        thought: String,
         /// The final answer text.
         answer: String,
     },
     /// The LLM is still thinking (no ACTION or FINAL ANSWER directives found).
-    ContinueThinking,
+    ContinueThinking {
+        /// The LLM's reasoning content from the THOUGHT section.
+        thought: String,
+    },
 }
 
 /// Build the initial conversation messages for a chat completion.
@@ -157,20 +164,28 @@ pub async fn stream_llm_response(
 ///
 /// This is a minimal parser. It scans the response for recognized directives:
 ///
-/// - `FINAL ANSWER:` prefix -> `LlmDirective::Finish`
-/// - `ACTION:` prefix -> `LlmDirective::Act`
-/// - Otherwise -> `LlmDirective::ContinueThinking`
+/// - `FINAL ANSWER:` prefix -> `LlmDirective::Finish` (with thought content)
+/// - `ACTION:` prefix -> `LlmDirective::Act` (with thought content)
+/// - Otherwise -> `LlmDirective::ContinueThinking` (carries the full response as thought)
+///
+/// The THOUGHT: prefix is extracted and attached to each directive variant.
+/// If no THOUGHT: prefix is found, the thought field defaults to the full
+/// response text (or the part before the directive).
 ///
 /// The parsing is case-insensitive for the directive prefix. The content after
 /// the prefix is trimmed.
 pub fn parse_next_action(response: &str) -> LlmDirective {
+    let thought = extract_thought(response).unwrap_or_else(|| response.to_string());
     let response_upper = response.to_uppercase();
 
     // Check for FINAL ANSWER first (more specific)
     if let Some(pos) = response_upper.find("FINAL ANSWER:") {
         let answer = response[pos + "FINAL ANSWER:".len()..].trim().to_string();
         if !answer.is_empty() {
-            return LlmDirective::Finish { answer };
+            return LlmDirective::Finish {
+                thought,
+                answer,
+            };
         }
     }
 
@@ -184,7 +199,11 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
             if let Some(close_pos) = args_and_close.rfind(')') {
                 let args = args_and_close[..close_pos].trim().to_string();
                 if !tool.is_empty() {
-                    return LlmDirective::Act { tool, args };
+                    return LlmDirective::Act {
+                        thought,
+                        tool,
+                        args,
+                    };
                 }
             }
         }
@@ -192,13 +211,45 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
         let tool = action_str.trim().to_string();
         if !tool.is_empty() {
             return LlmDirective::Act {
+                thought,
                 tool,
                 args: String::new(),
             };
         }
     }
 
-    LlmDirective::ContinueThinking
+    LlmDirective::ContinueThinking { thought }
+}
+
+/// Extract the THOUGHT content from a ReAct-formatted LLM response.
+///
+/// Looks for a line starting with `THOUGHT:` (case-insensitive) and returns
+/// the text between THOUGHT: and the next directive (ACTION:, FINAL ANSWER:)
+/// or end of response. Returns `None` if no THOUGHT prefix is found.
+fn extract_thought(response: &str) -> Option<String> {
+    let response_upper = response.to_uppercase();
+    let thought_pos = response_upper.find("THOUGHT:")?;
+    let thought_start = thought_pos + "THOUGHT:".len();
+
+    // Determine where the thought content ends: at the start of the next directive
+    // or the start position of the directive keyword that was matched
+    let remainder = &response[thought_start..];
+    let remainder_upper = &response_upper[thought_start..];
+
+    let end_pos = remainder_upper
+        .find("FINAL ANSWER:")
+        .or_else(|| remainder_upper.find("ACTION:"));
+
+    let thought_content = match end_pos {
+        Some(end) => remainder[..end].trim().to_string(),
+        None => remainder.trim().to_string(),
+    };
+
+    if thought_content.is_empty() {
+        None
+    } else {
+        Some(thought_content)
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +264,7 @@ mod tests {
         assert_eq!(
             result,
             LlmDirective::Finish {
+                thought: "I now have all the information.".to_string(),
                 answer: "The capital of France is Paris.".to_string()
             }
         );
@@ -226,6 +278,7 @@ mod tests {
         assert_eq!(
             result,
             LlmDirective::Act {
+                thought: "I need to look up the weather.".to_string(),
                 tool: "get_weather".to_string(),
                 args: "location=\"Paris\", unit=\"celsius\"".to_string(),
             }
@@ -238,6 +291,7 @@ mod tests {
         assert_eq!(
             result,
             LlmDirective::Act {
+                thought: "Need to think more.".to_string(),
                 tool: "think".to_string(),
                 args: String::new(),
             }
@@ -249,7 +303,13 @@ mod tests {
         let result = parse_next_action(
             "THOUGHT: I am not sure what tool to use yet. Let me think more carefully.",
         );
-        assert_eq!(result, LlmDirective::ContinueThinking);
+        assert_eq!(
+            result,
+            LlmDirective::ContinueThinking {
+                thought: "I am not sure what tool to use yet. Let me think more carefully."
+                    .to_string(),
+            }
+        );
     }
 
     #[test]
@@ -258,6 +318,7 @@ mod tests {
         assert_eq!(
             result,
             LlmDirective::Finish {
+                thought: "reasoning".to_string(),
                 answer: "Done.".to_string()
             }
         );
@@ -266,7 +327,12 @@ mod tests {
     #[test]
     fn parse_empty_action_after_colon_is_continue() {
         let result = parse_next_action("ACTION: ");
-        assert_eq!(result, LlmDirective::ContinueThinking);
+        assert_eq!(
+            result,
+            LlmDirective::ContinueThinking {
+                thought: "ACTION: ".to_string(),
+            }
+        );
     }
 
     #[test]
