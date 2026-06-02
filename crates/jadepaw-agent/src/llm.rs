@@ -109,9 +109,10 @@ pub fn build_initial_messages(
 /// which emits a single `ReActStep::Thought` event with the complete
 /// response after parsing.
 ///
-/// The `tx` parameter is retained as a passthrough to detect channel close
+/// The `close_signal` parameter is used to detect channel close
 /// (graceful early termination if the SSE consumer disconnects). It is NOT
-/// used to emit per-token events.
+/// used to emit per-token events. The name intentionally signals that only
+/// the closed-check is performed here; the caller owns event emission.
 ///
 /// # Errors
 ///
@@ -123,7 +124,7 @@ pub async fn stream_llm_response(
     client: &Client<Box<dyn Config>>,
     messages: Vec<ChatCompletionRequestMessage>,
     model: &str,
-    tx: &mpsc::Sender<ReActStep>,
+    close_signal: &mpsc::Sender<ReActStep>,
 ) -> anyhow::Result<String> {
     let request = CreateChatCompletionRequestArgs::default()
         .model(model)
@@ -149,7 +150,7 @@ pub async fn stream_llm_response(
                 }
                 // Check if the receiver is still alive (SSE consumer connected).
                 // If the channel is closed, stop streaming gracefully.
-                if tx.is_closed() {
+                if close_signal.is_closed() {
                     return Ok(full_content);
                 }
             }
