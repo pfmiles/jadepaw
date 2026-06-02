@@ -163,7 +163,13 @@ pub async fn react_loop(
 
         match action {
             LlmDirective::Finish { thought: _, answer } => {
-                // Emit finished event
+                // Emit finished event.
+                // NOTE: The `thought` field from LlmDirective::Finish is
+                // intentionally NOT stored in ReActStep::Finished. The
+                // final reasoning context is already present in the trace
+                // via the ReActStep::Thought pushed at the start of this
+                // turn (line 159). Adding it redundantly to Finished would
+                // bloat the trace without adding information.
                 let finished = ReActStep::Finished {
                     answer: answer.clone(),
                 };
