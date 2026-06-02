@@ -1,6 +1,6 @@
 ---
 phase: 03-agent-runtime
-reviewed: 2026-06-02T00:00:00Z
+reviewed: 2026-06-03T00:00:00Z
 depth: standard
 files_reviewed: 11
 files_reviewed_list:
@@ -16,147 +16,153 @@ files_reviewed_list:
   - crates/jadepaw-core/src/guest_exports.rs
   - crates/jadepaw-core/tests/agent_types.rs
 findings:
-  critical: 1
+  critical: 0
   warning: 3
-  info: 1
-  total: 5
+  info: 3
+  total: 6
 status: issues_found
 ---
 
-# Phase 03: Code Review Report
+# Phase 03: Code Review Report (Re-Review)
 
-**Reviewed:** 2026-06-02
+**Reviewed:** 2026-06-03
 **Depth:** standard
 **Files Reviewed:** 11
 **Status:** issues_found
 
 ## Summary
 
-Review of the agent runtime implementation covering the ReAct loop orchestrator, termination guards, LLM integration with async-openai, SSE event relay, core data types, and error handling. The codebase demonstrates well-structured separation of concerns, clear design documentation in module headers, and good use of Rust's type system for error classification.
+Re-review of the Phase 03 agent-runtime code after the fix chain for CR-01, WR-01, WR-02, and WR-03. All four fixes have been verified correct:
 
-Key concerns include a potential SSE stream leak when termination guards fire, subtle `extract_turn_from_error` ambiguity in turn-0 cases, a redundant trace push path in the `Finished` branch, and a `Finish` destructure where the thought field is discarded when it could be useful.
+- **CR-01** (SSE stream leak): `drop(tx)` now precedes error propagation in `run_agent` (lib.rs:112-114). Confirmed fixed.
+- **WR-01** (`extract_turn_from_error` ambiguity): Function now returns `Option<u32>` with caller using `.unwrap_or(0)` (guard.rs:126-135, 95). Confirmed fixed.
+- **WR-02** (Finished trace ordering): `trace.push(finished)` now happens before `tx.send(finished)` in the Finished branch (loop.rs:181-184). Confirmed fixed.
+- **WR-03** (discarded thought field): Detailed comment block documents the intentional coupling between the `LlmDirective::Finish.thought` discard and the `ReActStep::Thought` already in trace (loop.rs:167-172). Confirmed fixed.
 
-## Critical Issues
+All 31 tests pass across jadepaw-agent and jadepaw-core (zero failures).
 
-### CR-01: Unbounded async closure captures live mpsc receiver under early-return path
-
-**File:** `crates/jadepaw-agent/src/lib.rs:94-109`
-**Issue:** The closure `|| { r#loop::react_loop(...) }` passed to `run_with_guard` on line 94 captures `tx` by reference. The `tx` is dropped on line 109, *after* `run_with_guard` completes. However, if `run_with_guard` returns `Err` (wall-clock timeout, iteration limit, loop error), the `?` operator on line 106 propagates the error immediately, skipping line 109 entirely. The `tx` remains alive, and the returned `sse_stream` (constructed on line 88) wraps a `ReceiverStream` whose receiver will never receive a close signal. Any downstream consumer polling `sse_stream` will block indefinitely waiting for the next event that never arrives.
-
-This is a resource leak in the streaming pipeline: the SSE stream never terminates naturally, and the consumer (axum response, HTMX frontend) hangs.
-
-**Fix:** Drop `tx` *before* propagating the error:
-```rust
-let trace = guard::run_with_guard(&guard_config, || {
-    r#loop::react_loop(
-        &guard_config,
-        &mut handle,
-        &llm_client,
-        model,
-        system_prompt,
-        &user_message,
-        context,
-        &tx,
-    )
-})
-.await;
-drop(tx); // always executed, regardless of result
-
-let trace = trace?; // now propagate error after dropping tx
-
-// Extract final answer (line 114-128) continues as before...
-```
-
-Alternatively, use a `Drop` guard or defer mechanism to ensure `tx` is always dropped before the function returns.
+Three new warnings were identified during re-review: inconsistent send-then-push ordering in the Act branch (not fixed alongside WR-02), fragile string parsing in `extract_turn_from_error`, and a misleading interface on `stream_llm_response`. Three info-level findings are also documented.
 
 ## Warnings
 
-### WR-01: `extract_turn_from_error` returns 0 for both "error on turn 0" and "could not determine turn"
+### WR-04: Act branch still uses send-then-push (inconsistent with WR-02 fix)
 
-**File:** `crates/jadepaw-agent/src/guard.rs:124-133`
-**Issue:** The fallback path in `extract_turn_from_error` returns `0` when the turn number cannot be parsed from the error message. This makes the return value ambiguous: both a legitimate error on turn 0 and a parsing failure produce the same `turn: 0` output. The comment on lines 121-123 acknowledges this ambiguity but does not provide a mechanism for callers to distinguish the two cases. The caller at lines 95-96 always uses the returned value directly, potentially mis-attributing an error to turn 0 when the turn was actually unparseable.
+**File:** `crates/jadepaw-agent/src/loop.rs:209-224`
+**Issue:** WR-02 fixed the ordering in the `LlmDirective::Finish` branch to push to `trace` before sending to `tx`. However, the `LlmDirective::Act` branch still uses the reverse pattern: `action_step` is sent via `tx` at line 209 before being pushed to `trace` at line 212. The observation step follows the same pattern: sent at line 221, pushed at line 224.
 
-**Fix:** Return `Option<u32>` from `extract_turn_from_error` and let the caller decide the fallback:
+The consequences differ between the two branches:
+- **Finish**: Returns `Ok(trace)` on success. Without WR-02's fix, a channel close during send would leave the Finished step missing from the trace, causing `run_agent` to fail with "agent completed without producing a final answer".
+- **Act**: Returns `Err(ChannelClosed)` on channel close, so the caller never sees the incomplete trace. The ordering inconsistency is defensible but creates a maintenance hazard -- future developers expecting the WR-02 pattern may accidentally modify one branch without updating the other, or refactor the error handling in the Act branch without realizing the trace could be incomplete.
+
+**Fix:** Apply the same push-before-send pattern to the Act branch for consistency and defensive correctness:
 ```rust
-fn extract_turn_from_error(err_msg: &str) -> Option<u32> {
-    if let Some(turn_pos) = err_msg.find("on turn ") {
-        let after = &err_msg[turn_pos + "on turn ".len()..];
-        let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(turn) = turn_str.parse::<u32>() {
-            return Some(turn);
-        }
+// Push to trace before sending to tx
+trace.push(action_step.clone());
+if tx.send(action_step).await.is_err() {
+    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
+}
+// Same for observation
+trace.push(observation.clone());
+if tx.send(observation).await.is_err() {
+    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
+}
+```
+
+### WR-05: Fragile `extract_turn_from_error` string parsing — first match may be wrong
+
+**File:** `crates/jadepaw-agent/src/guard.rs:126-135`
+**Issue:** The `extract_turn_from_error` function searches the full anyhow error chain string for the first occurrence of "on turn ". The loop code at loop.rs:142 adds context via `.with_context(|| format!("LLM call failed on turn {}", turn))`, producing "LLM call failed on turn N" at the front of the Display chain. If the underlying source error (from async-openai, reqwest, or tokio) also happens to contain "on turn " in its error message, the function could extract a turn number from the wrong position.
+
+While the first match is typically the context message (which uses the correct turn number), anyhow's Display order is not guaranteed by contract -- it's an implementation detail. Additionally, if a future code change adds context messages containing "on turn N" at multiple layers, the function would pick the first one arbitrarily.
+
+**Fix:** Use a more specific prefix for the context message that uniquely identifies the intended extraction target:
+```rust
+// In loop.rs, use a distinctive marker:
+.with_context(|| format!("LLM call failed |turn={}|", turn))
+
+// In guard.rs, search for the specific marker:
+if let Some(turn_pos) = err_msg.find("|turn=") {
+    let after = &err_msg[turn_pos + "|turn=".len()..];
+    let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if let Ok(turn) = turn_str.parse::<u32>() {
+        return Some(turn);
     }
-    None
 }
 ```
-In the caller:
+Alternatively, switch to a structured error approach (e.g., a dedicated error type field) to avoid string parsing entirely.
+
+### WR-06: `stream_llm_response` takes `tx: &Sender<ReActStep>` but only uses `is_closed()`
+
+**File:** `crates/jadepaw-agent/src/llm.rs:122-163`
+**Issue:** The function signature at line 123-127 accepts `tx: &mpsc::Sender<ReActStep>` but uses it solely for the `tx.is_closed()` check at line 152 to bail out early. The parameter name and type signal that the function *can* send events, but it does not. This is a misleading interface: a caller reading the signature would assume per-token SSE events are emitted here, but the actual emit happens in the caller (`react_loop` at loop.rs:154).
+
+The documentation at lines 112-114 clarifies this, but interface design should be self-documenting where possible -- a parameter that carries incorrect implications is worse than no parameter.
+
+**Fix:** Accept a simpler signal for the closed check, or rename the parameter to reflect its actual role:
 ```rust
-let turn = extract_turn_from_error(&err_msg).unwrap_or(0);
+pub async fn stream_llm_response(
+    client: &Client<Box<dyn Config>>,
+    messages: Vec<ChatCompletionRequestMessage>,
+    model: &str,
+    close_signal: &mpsc::Sender<ReActStep>,  // renamed: clarifies it's only for signal
+) -> anyhow::Result<String> {
 ```
 
-### WR-02: `tx.send(finished)` before `trace.push(finished)` creates trace inconsistency window
-
-**File:** `crates/jadepaw-agent/src/loop.rs:164-175`
-**Issue:** When the LLM directive is `LlmDirective::Finish`, the `finished` step is sent through `tx` (SSE channel) at line 170 *before* it is pushed to the local `trace` at line 173. If the SSE consumer processes the `done` event, disconnects, and the channel close triggers immediately, there is a narrow window where `trace.push(finished)` at line 173 may not execute before the function returns. The upstream `run_agent` function (lines 114-128) would then fail with "agent completed without producing a final answer" because it won't find the `Finished` step in the trace.
-
-While this is an unlikely race condition (the `Finished` branch returns `Ok(trace)` synchronously after the push), the ordering is still semantically wrong -- the local state should be updated before external notification.
-
-**Fix:** Push to `trace` before sending to `tx`:
-```rust
-LlmDirective::Finish { thought: _, answer } => {
-    let finished = ReActStep::Finished {
-        answer: answer.clone(),
-    };
-    trace.push(finished.clone());
-    if tx.send(finished).await.is_err() {
-        return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
-    }
-    return Ok(trace);
-}
-```
-
-### WR-03: `LlmDirective::Finish { thought: _ }` discards the final thought field
-
-**File:** `crates/jadepaw-agent/src/loop.rs:165`
-**Issue:** The `LlmDirective::Finish` variant carries a `thought` field (the LLM's final reasoning before the answer), but this field is destructured as `_` (discarded) on line 165. The `Finished` `ReActStep` only contains the `answer`. The reasoning content is indirectly preserved via the `ReActStep::Thought` pushed to trace on line 159, so this is not a data loss bug today. However, this is a fragile dependency: if the `Thought` event is ever conditionally emitted or reordered, the reasoning context for the final answer would be lost silently.
-
-**Fix:** Add a comment explicitly documenting the intentional coupling:
-```rust
-LlmDirective::Finish { thought: final_thought, answer } => {
-    // final_thought is intentionally NOT stored in Finished step --
-    // it is already present in the trace from the ReActStep::Thought
-    // pushed at the start of this turn (line 159).
-    let finished = ReActStep::Finished {
-        answer: answer.clone(),
-    };
-    // ...
-}
-```
-Or consider adding an optional `thought` field to `ReActStep::Finished` for completeness.
+Alternatively, accept a `tokio::sync::watch::Receiver<bool>` or a simple `&AtomicBool` for the stop signal, separating concerns cleanly.
 
 ## Info
 
-### IN-01: `temp_dir()` usage in `run_agent` creates non-deterministic sandbox roots
+### IN-01: `temp_dir()` usage persists (carried from previous review IN-01)
 
 **File:** `crates/jadepaw-agent/src/lib.rs:72`
-**Issue:** The `run_agent` function uses `std::env::temp_dir()` to create a sandbox root for `SessionState::with_defaults()`. This picks up the system temp directory, which varies between environments and platforms. In multi-tenant deployment scenarios, this could lead to sandbox isolation issues or conflicts between concurrent sessions using the same temp directory subtree.
+**Issue:** The `run_agent` function calls `std::env::temp_dir()` to create a sandbox root for `SessionState::with_defaults()`. This uses the system temporary directory, which varies between environments, platforms, and OS users. In multi-tenant deployments, concurrent sessions using the same temp directory subtree could encounter isolation boundary issues.
 
-**Fix:** Accept a configurable sandbox root as a parameter, or use a dedicated directory structure:
+**Fix:** Accept a configurable sandbox root as a parameter, or construct a dedicated directory structure under a well-known path:
 ```rust
 pub async fn run_agent(
     req: AgentRequest,
     pool: Arc<InstancePool>,
     llm_client: Client<Box<dyn Config>>,
     model: &str,
-    sandbox_root: PathBuf,  // new parameter
+    sandbox_root: PathBuf,
 ) -> ... {
-    let state = SessionState::with_defaults(sandbox_root);
-    // ...
-}
+```
+
+### IN-02: Hardcoded `GuardConfig::default()` prevents per-skill customization
+
+**File:** `crates/jadepaw-agent/src/lib.rs:90`
+**Issue:** `run_agent` always uses `GuardConfig::default()` (20 iterations, 300-second timeout) with no mechanism for callers to override. Different skills or tenants may warrant different limits -- a simple calculation skill may need 5 iterations, while a complex research skill may need 50. Without parameterization, all sessions share the same constraints.
+
+**Fix:** Accept an optional `GuardConfig` parameter:
+```rust
+pub async fn run_agent(
+    req: AgentRequest,
+    pool: Arc<InstancePool>,
+    llm_client: Client<Box<dyn Config>>,
+    model: &str,
+    guard_config: Option<GuardConfig>,
+) -> ... {
+    let guard_config = guard_config.unwrap_or_default();
+```
+
+### IN-03: `WallClockTimeout.elapsed_ms` is set to `max_ms`, not actual elapsed
+
+**File:** `crates/jadepaw-agent/src/guard.rs:106-114`
+**Issue:** When the wall-clock timeout fires, both `elapsed_ms` and `max_ms` are set to `config.wall_clock_timeout.as_millis() as u64` (line 107-111). The field name `elapsed_ms` implies actual time elapsed, but the value is always identical to `max_ms` in this code path. The only time `elapsed_ms` could differ from `max_ms` is if constructed elsewhere manually.
+
+This makes debugging harder: a consumer sees `elapsed_ms: 300000, max_ms: 300000` and cannot distinguish "timed out at exactly 300 seconds" from "timeout was configured for 300 seconds and we report the timeout as happening at the config value."
+
+**Fix:** If actual elapsed measurement is not practical from the `tokio::select!` branch, rename the field or add a comment clarifying the semantics:
+```rust
+WallClockTimeout {
+    /// Approximate elapsed time in milliseconds.
+    /// When the timeout fires, this equals the configured max.
+    /// A precise elapsed measurement is not available from the select branch.
+    elapsed_ms: u64,
 ```
 
 ---
 
-_Reviewed: 2026-06-02T00:00:00Z_
+_Reviewed: 2026-06-03T00:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
