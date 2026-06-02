@@ -128,7 +128,10 @@ pub async fn react_loop(
             .store_mut()
             .set_fuel(1_000_000)
             .map_err(|e| {
-                anyhow::anyhow!("failed to set fuel on session store: {}", e)
+                loop_error(LoopErrorKind::LlmFailure {
+                    turn,
+                    source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
+                })
             })?;
 
         // Stream LLM response — accumulates full text without per-token events
