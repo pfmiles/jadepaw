@@ -16,150 +16,106 @@ files_reviewed_list:
   - crates/jadepaw-core/src/guest_exports.rs
   - crates/jadepaw-core/tests/agent_types.rs
 findings:
-  critical: 0
-  warning: 3
+  critical: 1
+  warning: 0
   info: 3
-  total: 6
+  total: 4
 status: issues_found
 ---
 
-# Phase 03: Code Review Report (Re-Review)
+# Phase 03: Code Review Report (Round 3)
 
-**Reviewed:** 2026-06-03
+**Reviewed:** 2026-06-03T00:00:00Z
 **Depth:** standard
 **Files Reviewed:** 11
 **Status:** issues_found
 
 ## Summary
 
-Re-review of the Phase 03 agent-runtime code after the fix chain for CR-01, WR-01, WR-02, and WR-03. All four fixes have been verified correct:
+Third re-review of Phase 03 agent-runtime. All six previously identified issues (CR-01, WR-01 through WR-06 from rounds 1-2) have been verified as correctly fixed and are confirmed resolved:
 
-- **CR-01** (SSE stream leak): `drop(tx)` now precedes error propagation in `run_agent` (lib.rs:112-114). Confirmed fixed.
-- **WR-01** (`extract_turn_from_error` ambiguity): Function now returns `Option<u32>` with caller using `.unwrap_or(0)` (guard.rs:126-135, 95). Confirmed fixed.
-- **WR-02** (Finished trace ordering): `trace.push(finished)` now happens before `tx.send(finished)` in the Finished branch (loop.rs:181-184). Confirmed fixed.
-- **WR-03** (discarded thought field): Detailed comment block documents the intentional coupling between the `LlmDirective::Finish.thought` discard and the `ReActStep::Thought` already in trace (loop.rs:167-172). Confirmed fixed.
+| Previous ID | Status | Verification |
+|---|---|---|
+| CR-01 (SSE stream leak) | Fixed | `drop(tx)` at lib.rs:112 precedes error propagation |
+| WR-01 (turn extraction ambiguity) | Fixed | `extract_turn_from_error` returns `Option<u32>` |
+| WR-02 (Finished trace ordering) | Fixed | `trace.push()` before `tx.send()` in Finish branch (loop.rs:181-184) |
+| WR-03 (discarded thought field) | Fixed | Documentation block at loop.rs:167-172 |
+| WR-04 (Act branch send-then-push) | Fixed | `trace.push()` before `tx.send()` in Act branch (loop.rs:211-213) |
+| WR-05 (fragile string parsing) | Fixed | Structured `|turn=N|` marker (guard.rs:128, loop.rs:142) |
+| WR-06 (misleading tx parameter) | Fixed | Renamed to `close_signal` (llm.rs:127) |
 
-All 31 tests pass across jadepaw-agent and jadepaw-core (zero failures).
+All 34 tests pass across jadepaw-agent, jadepaw-core, and jadepaw-wasm. The project compiles cleanly with zero warnings.
 
-Three new warnings were identified during re-review: inconsistent send-then-push ordering in the Act branch (not fixed alongside WR-02), fragile string parsing in `extract_turn_from_error`, and a misleading interface on `stream_llm_response`. Three info-level findings are also documented.
+One **new critical issue** was identified: the fuel-reset error path in the ReAct loop bypasses the `LoopErrorKind` structured classification system, causing host-side infrastructure errors to be misclassified as wasm guest traps.
 
-## Warnings
+Three info-level findings from the previous review (IN-01: temp_dir, IN-02: hardcoded GuardConfig, IN-03: elapsed_ms field semantics) remain unfixed but are documented below for completeness.
 
-### WR-04: Act branch still uses send-then-push (inconsistent with WR-02 fix)
+## Critical Issues
 
-**File:** `crates/jadepaw-agent/src/loop.rs:209-224`
-**Issue:** WR-02 fixed the ordering in the `LlmDirective::Finish` branch to push to `trace` before sending to `tx`. However, the `LlmDirective::Act` branch still uses the reverse pattern: `action_step` is sent via `tx` at line 209 before being pushed to `trace` at line 212. The observation step follows the same pattern: sent at line 221, pushed at line 224.
+### CR-01: Fuel reset failure misclassified as WasmTrap instead of InfrastructureError
 
-The consequences differ between the two branches:
-- **Finish**: Returns `Ok(trace)` on success. Without WR-02's fix, a channel close during send would leave the Finished step missing from the trace, causing `run_agent` to fail with "agent completed without producing a final answer".
-- **Act**: Returns `Err(ChannelClosed)` on channel close, so the caller never sees the incomplete trace. The ordering inconsistency is defensible but creates a maintenance hazard -- future developers expecting the WR-02 pattern may accidentally modify one branch without updating the other, or refactor the error handling in the Act branch without realizing the trace could be incomplete.
+**File:** `crates/jadepaw-agent/src/loop.rs:127-132`
+**Issue:** The per-turn fuel reset on the wasmtime `Store` uses `anyhow::anyhow!()` directly with the `?` operator, producing a plain `anyhow::Error` that is NOT wrapped in `LoopErrorKind`. This is the only error path in `react_loop()` that bypasses the structured error classification system.
 
-**Fix:** Apply the same push-before-send pattern to the Act branch for consistency and defensive correctness:
+Error propagation chain:
+1. `loop.rs:130-132` — `session.store_mut().set_fuel(1_000_000)` fails, error wrapped as `anyhow::anyhow!("failed to set fuel on session store: {}", e)`, propagated via `?`
+2. `react_loop` returns `Err(plain_anyhow_error)` to `run_with_guard`
+3. `guard.rs:64` — `e.downcast_ref::<LoopErrorKind>()` returns `None` because the error was created with `anyhow::anyhow!()`, not `loop_error()`
+4. `guard.rs:92-102` — fallback branch executes: `extract_turn_from_error` returns `None` (message lacks `|turn=N|` marker), turn defaults to 0, error classified as `AgentTerminationReason::WasmTrap`
+
+The resulting `WasmTrap` classification is semantically wrong: a fuel reset failure is a host-side infrastructure/config issue, not a guest sandbox violation. Downstream consumers inspecting `AgentTerminationReason` would misinterpret this as a guest module bug rather than a host configuration problem.
+
+Every other error path in `react_loop` correctly routes through `LoopErrorKind`:
+- LLM failures: `LoopErrorKind::LlmFailure` (line 144)
+- Channel closures: `LoopErrorKind::ChannelClosed` (lines 155, 183, 213, 225)
+- Max iterations: `LoopErrorKind::MaxIterations` (line 248)
+
+**Fix:**
 ```rust
-// Push to trace before sending to tx
-trace.push(action_step.clone());
-if tx.send(action_step).await.is_err() {
-    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
-}
-// Same for observation
-trace.push(observation.clone());
-if tx.send(observation).await.is_err() {
-    return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
-}
+// In crates/jadepaw-agent/src/loop.rs, lines 127-132, change from:
+        session
+            .store_mut()
+            .set_fuel(1_000_000)
+            .map_err(|e| {
+                anyhow::anyhow!("failed to set fuel on session store: {}", e)
+            })?;
+
+// To:
+        session
+            .store_mut()
+            .set_fuel(1_000_000)
+            .map_err(|e| {
+                loop_error(LoopErrorKind::LlmFailure {
+                    turn,
+                    source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
+                })
+            })?;
 ```
 
-### WR-05: Fragile `extract_turn_from_error` string parsing — first match may be wrong
-
-**File:** `crates/jadepaw-agent/src/guard.rs:126-135`
-**Issue:** The `extract_turn_from_error` function searches the full anyhow error chain string for the first occurrence of "on turn ". The loop code at loop.rs:142 adds context via `.with_context(|| format!("LLM call failed on turn {}", turn))`, producing "LLM call failed on turn N" at the front of the Display chain. If the underlying source error (from async-openai, reqwest, or tokio) also happens to contain "on turn " in its error message, the function could extract a turn number from the wrong position.
-
-While the first match is typically the context message (which uses the correct turn number), anyhow's Display order is not guaranteed by contract -- it's an implementation detail. Additionally, if a future code change adds context messages containing "on turn N" at multiple layers, the function would pick the first one arbitrarily.
-
-**Fix:** Use a more specific prefix for the context message that uniquely identifies the intended extraction target:
-```rust
-// In loop.rs, use a distinctive marker:
-.with_context(|| format!("LLM call failed |turn={}|", turn))
-
-// In guard.rs, search for the specific marker:
-if let Some(turn_pos) = err_msg.find("|turn=") {
-    let after = &err_msg[turn_pos + "|turn=".len()..];
-    let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if let Ok(turn) = turn_str.parse::<u32>() {
-        return Some(turn);
-    }
-}
-```
-Alternatively, switch to a structured error approach (e.g., a dedicated error type field) to avoid string parsing entirely.
-
-### WR-06: `stream_llm_response` takes `tx: &Sender<ReActStep>` but only uses `is_closed()`
-
-**File:** `crates/jadepaw-agent/src/llm.rs:122-163`
-**Issue:** The function signature at line 123-127 accepts `tx: &mpsc::Sender<ReActStep>` but uses it solely for the `tx.is_closed()` check at line 152 to bail out early. The parameter name and type signal that the function *can* send events, but it does not. This is a misleading interface: a caller reading the signature would assume per-token SSE events are emitted here, but the actual emit happens in the caller (`react_loop` at loop.rs:154).
-
-The documentation at lines 112-114 clarifies this, but interface design should be self-documenting where possible -- a parameter that carries incorrect implications is worse than no parameter.
-
-**Fix:** Accept a simpler signal for the closed check, or rename the parameter to reflect its actual role:
-```rust
-pub async fn stream_llm_response(
-    client: &Client<Box<dyn Config>>,
-    messages: Vec<ChatCompletionRequestMessage>,
-    model: &str,
-    close_signal: &mpsc::Sender<ReActStep>,  // renamed: clarifies it's only for signal
-) -> anyhow::Result<String> {
-```
-
-Alternatively, accept a `tokio::sync::watch::Receiver<bool>` or a simple `&AtomicBool` for the stop signal, separating concerns cleanly.
+This wraps the error in `LoopErrorKind::LlmFailure` with the correct turn number, enabling `run_with_guard`'s downcast path (guard.rs:64-73) to classify it as `AgentTerminationReason::InfrastructureError`. The `LlmFailure` variant name is slightly imprecise here (the failure is store/engine, not LLM), but its guard mapping to `InfrastructureError` is correct. For maximum precision, a dedicated variant like `LoopErrorKind::StoreError { turn, source }` could be introduced and mapped identically.
 
 ## Info
 
-### IN-01: `temp_dir()` usage persists (carried from previous review IN-01)
+### IN-01: `temp_dir()` usage persists — no configurable sandbox root
 
 **File:** `crates/jadepaw-agent/src/lib.rs:72`
-**Issue:** The `run_agent` function calls `std::env::temp_dir()` to create a sandbox root for `SessionState::with_defaults()`. This uses the system temporary directory, which varies between environments, platforms, and OS users. In multi-tenant deployments, concurrent sessions using the same temp directory subtree could encounter isolation boundary issues.
+**Issue:** (Carried from previous review.) `run_agent` uses `std::env::temp_dir()` for the sandbox root. In multi-tenant deployments, concurrent sessions using the same temp directory subtree could face isolation boundary issues. The sandbox root should be a configurable parameter rather than hardcoded to the OS temp directory.
 
-**Fix:** Accept a configurable sandbox root as a parameter, or construct a dedicated directory structure under a well-known path:
-```rust
-pub async fn run_agent(
-    req: AgentRequest,
-    pool: Arc<InstancePool>,
-    llm_client: Client<Box<dyn Config>>,
-    model: &str,
-    sandbox_root: PathBuf,
-) -> ... {
-```
+**Suggested fix:** Accept `sandbox_root: PathBuf` as a parameter to `run_agent`, or derive from a tenant-specific config.
 
-### IN-02: Hardcoded `GuardConfig::default()` prevents per-skill customization
+### IN-02: Hardcoded `GuardConfig::default()` prevents per-skill/per-tenant customization
 
 **File:** `crates/jadepaw-agent/src/lib.rs:90`
-**Issue:** `run_agent` always uses `GuardConfig::default()` (20 iterations, 300-second timeout) with no mechanism for callers to override. Different skills or tenants may warrant different limits -- a simple calculation skill may need 5 iterations, while a complex research skill may need 50. Without parameterization, all sessions share the same constraints.
+**Issue:** (Carried from previous review.) `run_agent` always uses `GuardConfig::default()` (20 iterations, 300s timeout). Different skills may warrant different limits. Without parameterization, all sessions share identical constraints.
 
-**Fix:** Accept an optional `GuardConfig` parameter:
-```rust
-pub async fn run_agent(
-    req: AgentRequest,
-    pool: Arc<InstancePool>,
-    llm_client: Client<Box<dyn Config>>,
-    model: &str,
-    guard_config: Option<GuardConfig>,
-) -> ... {
-    let guard_config = guard_config.unwrap_or_default();
-```
+**Suggested fix:** Accept `guard_config: Option<GuardConfig>` in `run_agent`'s signature, falling back to `Default::default()` when `None`.
 
-### IN-03: `WallClockTimeout.elapsed_ms` is set to `max_ms`, not actual elapsed
+### IN-03: `WallClockTimeout.elapsed_ms` always equals `max_ms` in current code
 
 **File:** `crates/jadepaw-agent/src/guard.rs:106-114`
-**Issue:** When the wall-clock timeout fires, both `elapsed_ms` and `max_ms` are set to `config.wall_clock_timeout.as_millis() as u64` (line 107-111). The field name `elapsed_ms` implies actual time elapsed, but the value is always identical to `max_ms` in this code path. The only time `elapsed_ms` could differ from `max_ms` is if constructed elsewhere manually.
+**Issue:** (Carried from previous review.) When the wall-clock timeout fires, line 107 sets `elapsed_ms` to `config.wall_clock_timeout.as_millis() as u64`, which is identical to `max_ms`. The field name implies actual elapsed time, but the value reported is always the configured limit. This reduces debuggability — a consumer cannot distinguish "timed out at exactly the limit" from "timeout value is reported as elapsed."
 
-This makes debugging harder: a consumer sees `elapsed_ms: 300000, max_ms: 300000` and cannot distinguish "timed out at exactly 300 seconds" from "timeout was configured for 300 seconds and we report the timeout as happening at the config value."
-
-**Fix:** If actual elapsed measurement is not practical from the `tokio::select!` branch, rename the field or add a comment clarifying the semantics:
-```rust
-WallClockTimeout {
-    /// Approximate elapsed time in milliseconds.
-    /// When the timeout fires, this equals the configured max.
-    /// A precise elapsed measurement is not available from the select branch.
-    elapsed_ms: u64,
-```
+**Suggested fix:** Add a doc comment on the `WallClockTimeout` variant clarifying that `elapsed_ms` is approximate and equals `max_ms` when the timeout fires from `tokio::select!`.
 
 ---
 
