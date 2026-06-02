@@ -167,10 +167,15 @@ pub async fn react_loop(
                 let finished = ReActStep::Finished {
                     answer: answer.clone(),
                 };
-                if tx.send(finished.clone()).await.is_err() {
+                // Push to trace BEFORE sending to tx: if the SSE consumer
+                // processes the done event and disconnects, the channel
+                // close is immediate. The local trace must be complete
+                // before the external notification goes out so the
+                // upstream caller always finds the Finished step.
+                trace.push(finished.clone());
+                if tx.send(finished).await.is_err() {
                     return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
-                trace.push(finished);
                 return Ok(trace);
             }
             LlmDirective::Act { thought: _, tool, args } => {
