@@ -92,7 +92,7 @@ where
                     // Fallback: unknown errors are classified as traps with the
                     // original error message preserved for debugging.
                     let err_msg = e.to_string();
-                    let turn = extract_turn_from_error(&err_msg);
+                    let turn = extract_turn_from_error(&err_msg).unwrap_or(0);
                     JadepawError::agent_terminated(
                         AgentTerminationReason::WasmTrap {
                             reason: err_msg,
@@ -115,20 +115,22 @@ where
     }
 }
 
-/// Attempt to extract a turn number from a loop error message.
+/// Attempt to extract a turn number from an error message.
 ///
 /// The loop uses `anyhow` error messages containing "on turn N". This
-/// function parses that pattern and returns the turn number. Returns
-/// 0 if the turn cannot be determined (callers should note that 0 is
-/// ambiguous between "error on turn 0" and "turn could not be parsed").
-fn extract_turn_from_error(err_msg: &str) -> u32 {
+/// function parses that pattern and returns the turn number.
+///
+/// Returns `None` if the turn cannot be determined, so callers can
+/// distinguish between "error on turn 0" and "turn could not be parsed"
+/// — unlike the previous `u32` return type where both cases produced 0.
+fn extract_turn_from_error(err_msg: &str) -> Option<u32> {
     // Look for "on turn <N>" pattern in the error message
     if let Some(turn_pos) = err_msg.find("on turn ") {
         let after = &err_msg[turn_pos + "on turn ".len()..];
         let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(turn) = turn_str.parse::<u32>() {
-            return turn;
+            return Some(turn);
         }
     }
-    0
+    None
 }
