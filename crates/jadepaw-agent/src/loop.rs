@@ -206,10 +206,12 @@ pub async fn react_loop(
                     tool: tool.clone(),
                     args: parsed_args,
                 };
-                if tx.send(action_step.clone()).await.is_err() {
+                // Push before send (consistent with WR-02 Finish branch fix):
+                // the local trace must be complete before external notification.
+                trace.push(action_step.clone());
+                if tx.send(action_step).await.is_err() {
                     return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
-                trace.push(action_step);
 
                 // Emit placeholder observation (full tool execution in Phase 4)
                 let observation = ReActStep::Observation {
@@ -218,10 +220,10 @@ pub async fn react_loop(
                         tool, args
                     ),
                 };
-                if tx.send(observation.clone()).await.is_err() {
+                trace.push(observation.clone());
+                if tx.send(observation).await.is_err() {
                     return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
-                trace.push(observation);
 
                 // Append the assistant's response to message history
                 let assistant_msg: ChatCompletionRequestMessage =
