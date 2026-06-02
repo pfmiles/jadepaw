@@ -9,42 +9,42 @@ skipped: 0
 status: all_fixed
 ---
 
-# Phase 3: Code Review Fix Report
+# Phase 03: Code Review Fix Report
 
-**Fixed at:** 2026-06-02
+**Fixed at:** 2026-06-02T00:00:00Z
 **Source review:** .planning/phases/03-agent-runtime/03-REVIEW.md
 **Iteration:** 1
 
 **Summary:**
-- Findings in scope: 4 (4 Warning, --fix scope = critical_warning)
+- Findings in scope: 4
 - Fixed: 4
 - Skipped: 0
 
 ## Fixed Issues
 
-### WR-01: TenantQuotaLimiter defined and exported but never wired into pool/session infrastructure
+### CR-01: Unbounded async closure captures live mpsc receiver under early-return path
 
-**Files modified:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs`
-**Commit:** 411b3de
-**Applied fix:** Added a module-level doc comment noting that `TenantQuotaLimiter` is implemented and tested but its wiring into `InstancePool`/`SessionState` is deferred to Phase 4 when per-tenant aggregate memory tracking is needed.
+**Files modified:** `crates/jadepaw-agent/src/lib.rs`
+**Commit:** 3931671
+**Applied fix:** Separated `drop(tx)` from `?` propagation so the mpsc sender is always dropped before any error propagation. The SSE channel close signal is now guaranteed to be sent regardless of whether `run_with_guard` returns an error, preventing downstream SSE consumers from hanging indefinitely.
 
-### WR-02: Unused dependencies in jadepaw-agent/Cargo.toml
+### WR-01: `extract_turn_from_error` returns 0 for both "error on turn 0" and "could not determine turn"
 
-**Files modified:** `crates/jadepaw-agent/Cargo.toml`, `Cargo.lock`
-**Commits:** 8504c9f, 842959e
-**Applied fix:** Removed `jadepaw-bus`, `async-trait`, and the redis feature block (including `[features]` section and `[dependencies.redis]`) from `jadepaw-agent/Cargo.toml`. Updated `Cargo.lock` accordingly. These can be re-added when the implementing code is committed.
+**Files modified:** `crates/jadepaw-agent/src/guard.rs`
+**Commit:** fc840d0
+**Applied fix:** Changed `extract_turn_from_error` return type from `u32` to `Option<u32>`. Returns `Some(n)` when a turn is successfully parsed, `None` when the turn cannot be determined. The caller uses `unwrap_or(0)` to preserve existing fallback semantics while making the ambiguity visible at the type level.
 
-### WR-03: GuardConfig consumed by value in run_with_guard, preventing reuse
+### WR-02: `tx.send(finished)` before `trace.push(finished)` creates trace inconsistency window
 
-**Files modified:** `crates/jadepaw-agent/src/guard.rs`, `crates/jadepaw-agent/src/lib.rs`, `crates/jadepaw-agent/tests/termination.rs`
-**Commit:** 42c7d7c
-**Applied fix:** Changed `run_with_guard` to accept `config: &GuardConfig` (borrow) instead of consuming by value. Updated the call site in `lib.rs` to pass `&guard_config`. Updated all 4 test call sites in `termination.rs` to pass references. `tokio::time::sleep` takes `Duration` by value (Copy), so borrowing works correctly.
+**Files modified:** `crates/jadepaw-agent/src/loop.rs`
+**Commit:** bf97f86
+**Applied fix:** Reordered the Finish branch so `trace.push(finished)` occurs before `tx.send(finished)`. Local state is now always updated before external notification goes out, ensuring the upstream caller always finds the Finished step in the trace.
 
-### WR-04: new_with_budget doc comment misleading (bytes vs megabytes)
+### WR-03: `LlmDirective::Finish { thought: _ }` discards the final thought field
 
-**Files modified:** `crates/jadepaw-wasm/src/limits/tenant_quota.rs`
-**Commit:** 411b3de (combined with WR-01)
-**Applied fix:** Updated the doc comment on `new_with_budget` to accurately describe that it accepts megabytes (not bytes) and is a convenience alias for `new()` primarily used in tests.
+**Files modified:** `crates/jadepaw-agent/src/loop.rs`
+**Commit:** 44c37d2
+**Applied fix:** Added an explicit comment documenting why the `thought` field from `LlmDirective::Finish` is intentionally discarded -- the reasoning context is already present in the trace via the `ReActStep::Thought` pushed at turn start. The comment prevents future readers from mistaking the silent discard for a data loss bug.
 
 ---
 
