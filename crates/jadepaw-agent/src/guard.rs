@@ -117,16 +117,16 @@ where
 
 /// Attempt to extract a turn number from an error message.
 ///
-/// The loop uses `anyhow` error messages containing "on turn N". This
-/// function parses that pattern and returns the turn number.
+/// The loop uses a structured marker `|turn=N|` in anyhow context messages
+/// so that parsing does not rely on substring matching of natural-language
+/// text that could appear in arbitrary source error messages.
 ///
 /// Returns `None` if the turn cannot be determined, so callers can
 /// distinguish between "error on turn 0" and "turn could not be parsed"
 /// — unlike the previous `u32` return type where both cases produced 0.
 fn extract_turn_from_error(err_msg: &str) -> Option<u32> {
-    // Look for "on turn <N>" pattern in the error message
-    if let Some(turn_pos) = err_msg.find("on turn ") {
-        let after = &err_msg[turn_pos + "on turn ".len()..];
+    if let Some(turn_pos) = err_msg.find("|turn=") {
+        let after = &err_msg[turn_pos + "|turn=".len()..];
         let turn_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(turn) = turn_str.parse::<u32>() {
             return Some(turn);

@@ -139,7 +139,7 @@ pub async fn react_loop(
             tx,
         )
         .await
-        .with_context(|| format!("LLM call failed on turn {}", turn))
+        .with_context(|| format!("LLM call failed |turn={}|", turn))
             .map_err(|e| {
                 loop_error(LoopErrorKind::LlmFailure {
                     turn,
