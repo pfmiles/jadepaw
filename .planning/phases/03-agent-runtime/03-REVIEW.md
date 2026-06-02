@@ -16,14 +16,14 @@ files_reviewed_list:
   - crates/jadepaw-core/src/guest_exports.rs
   - crates/jadepaw-core/tests/agent_types.rs
 findings:
-  critical: 1
+  critical: 0
   warning: 0
   info: 3
-  total: 4
+  total: 3
 status: issues_found
 ---
 
-# Phase 03: Code Review Report (Round 3)
+# Phase 03: Code Review Report (Round 4 — Final Re-review)
 
 **Reviewed:** 2026-06-03T00:00:00Z
 **Depth:** standard
@@ -32,11 +32,12 @@ status: issues_found
 
 ## Summary
 
-Third re-review of Phase 03 agent-runtime. All six previously identified issues (CR-01, WR-01 through WR-06 from rounds 1-2) have been verified as correctly fixed and are confirmed resolved:
+Fourth and final re-review of Phase 03 agent-runtime after all 8 prior fixes across 3 rounds. All previously identified issues (CR-01 from rounds 1 and 3, WR-01 through WR-06) have been verified as correctly fixed:
 
 | Previous ID | Status | Verification |
 |---|---|---|
-| CR-01 (SSE stream leak) | Fixed | `drop(tx)` at lib.rs:112 precedes error propagation |
+| CR-01 round 1 (SSE stream leak) | Fixed | `drop(tx)` at lib.rs:112 precedes error propagation |
+| CR-01 round 3 (fuel reset misclassification) | Fixed | Commit `ea7c7d8` — fuel reset uses `loop_error(LoopErrorKind::LlmFailure {...})` at loop.rs:131 |
 | WR-01 (turn extraction ambiguity) | Fixed | `extract_turn_from_error` returns `Option<u32>` |
 | WR-02 (Finished trace ordering) | Fixed | `trace.push()` before `tx.send()` in Finish branch (loop.rs:181-184) |
 | WR-03 (discarded thought field) | Fixed | Documentation block at loop.rs:167-172 |
@@ -44,55 +45,14 @@ Third re-review of Phase 03 agent-runtime. All six previously identified issues 
 | WR-05 (fragile string parsing) | Fixed | Structured `|turn=N|` marker (guard.rs:128, loop.rs:142) |
 | WR-06 (misleading tx parameter) | Fixed | Renamed to `close_signal` (llm.rs:127) |
 
-All 34 tests pass across jadepaw-agent, jadepaw-core, and jadepaw-wasm. The project compiles cleanly with zero warnings.
+**Verification methodology:**
+- Full cargo check of all targets — zero warnings
+- Full test suite — 80 tests passed, 1 ignored (stress test), 0 failed
+- Manual line-by-line trace of all error propagation paths in guard.rs and loop.rs
+- Cross-crate type verification for jadepaw-core, jadepaw-agent, and jadepaw-wasm boundaries
+- Security scan for hardcoded secrets, unsafe blocks, dangerous function calls — all clean
 
-One **new critical issue** was identified: the fuel-reset error path in the ReAct loop bypasses the `LoopErrorKind` structured classification system, causing host-side infrastructure errors to be misclassified as wasm guest traps.
-
-Three info-level findings from the previous review (IN-01: temp_dir, IN-02: hardcoded GuardConfig, IN-03: elapsed_ms field semantics) remain unfixed but are documented below for completeness.
-
-## Critical Issues
-
-### CR-01: Fuel reset failure misclassified as WasmTrap instead of InfrastructureError
-
-**File:** `crates/jadepaw-agent/src/loop.rs:127-132`
-**Issue:** The per-turn fuel reset on the wasmtime `Store` uses `anyhow::anyhow!()` directly with the `?` operator, producing a plain `anyhow::Error` that is NOT wrapped in `LoopErrorKind`. This is the only error path in `react_loop()` that bypasses the structured error classification system.
-
-Error propagation chain:
-1. `loop.rs:130-132` — `session.store_mut().set_fuel(1_000_000)` fails, error wrapped as `anyhow::anyhow!("failed to set fuel on session store: {}", e)`, propagated via `?`
-2. `react_loop` returns `Err(plain_anyhow_error)` to `run_with_guard`
-3. `guard.rs:64` — `e.downcast_ref::<LoopErrorKind>()` returns `None` because the error was created with `anyhow::anyhow!()`, not `loop_error()`
-4. `guard.rs:92-102` — fallback branch executes: `extract_turn_from_error` returns `None` (message lacks `|turn=N|` marker), turn defaults to 0, error classified as `AgentTerminationReason::WasmTrap`
-
-The resulting `WasmTrap` classification is semantically wrong: a fuel reset failure is a host-side infrastructure/config issue, not a guest sandbox violation. Downstream consumers inspecting `AgentTerminationReason` would misinterpret this as a guest module bug rather than a host configuration problem.
-
-Every other error path in `react_loop` correctly routes through `LoopErrorKind`:
-- LLM failures: `LoopErrorKind::LlmFailure` (line 144)
-- Channel closures: `LoopErrorKind::ChannelClosed` (lines 155, 183, 213, 225)
-- Max iterations: `LoopErrorKind::MaxIterations` (line 248)
-
-**Fix:**
-```rust
-// In crates/jadepaw-agent/src/loop.rs, lines 127-132, change from:
-        session
-            .store_mut()
-            .set_fuel(1_000_000)
-            .map_err(|e| {
-                anyhow::anyhow!("failed to set fuel on session store: {}", e)
-            })?;
-
-// To:
-        session
-            .store_mut()
-            .set_fuel(1_000_000)
-            .map_err(|e| {
-                loop_error(LoopErrorKind::LlmFailure {
-                    turn,
-                    source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
-                })
-            })?;
-```
-
-This wraps the error in `LoopErrorKind::LlmFailure` with the correct turn number, enabling `run_with_guard`'s downcast path (guard.rs:64-73) to classify it as `AgentTerminationReason::InfrastructureError`. The `LlmFailure` variant name is slightly imprecise here (the failure is store/engine, not LLM), but its guard mapping to `InfrastructureError` is correct. For maximum precision, a dedicated variant like `LoopErrorKind::StoreError { turn, source }` could be introduced and mapped identically.
+**No new critical or warning-level issues found.** The three info-level findings from previous rounds (IN-01: temp_dir, IN-02: hardcoded GuardConfig, IN-03: elapsed_ms field semantics) remain as documented below for completeness. These are not new findings and are carried forward for tracking purposes.
 
 ## Info
 
@@ -113,7 +73,7 @@ This wraps the error in `LoopErrorKind::LlmFailure` with the correct turn number
 ### IN-03: `WallClockTimeout.elapsed_ms` always equals `max_ms` in current code
 
 **File:** `crates/jadepaw-agent/src/guard.rs:106-114`
-**Issue:** (Carried from previous review.) When the wall-clock timeout fires, line 107 sets `elapsed_ms` to `config.wall_clock_timeout.as_millis() as u64`, which is identical to `max_ms`. The field name implies actual elapsed time, but the value reported is always the configured limit. This reduces debuggability — a consumer cannot distinguish "timed out at exactly the limit" from "timeout value is reported as elapsed."
+**Issue:** (Carried from previous review.) When the wall-clock timeout fires via `tokio::select!`, `elapsed_ms` is set to `config.wall_clock_timeout.as_millis() as u64`, which is identical to `max_ms`. The field name implies actual elapsed time, but the value reported is always the configured limit. This reduces debuggability — a consumer cannot distinguish "timed out at exactly the limit" from "timeout value is reported as elapsed."
 
 **Suggested fix:** Add a doc comment on the `WallClockTimeout` variant clarifying that `elapsed_ms` is approximate and equals `max_ms` when the timeout fires from `tokio::select!`.
 
