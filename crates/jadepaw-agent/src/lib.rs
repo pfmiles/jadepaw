@@ -103,10 +103,15 @@ pub async fn run_agent(
             &tx,
         )
     })
-    .await?;
+    .await;
 
-    // Drop the sender so the SSE stream knows we're done
+    // Drop the sender so the SSE stream knows we're done.
+    // This MUST execute before any error propagation below — if run_with_guard
+    // returned an Err, the SSE stream still needs the channel-close signal so
+    // downstream consumers don't hang indefinitely waiting for events.
     drop(tx);
+
+    let trace = trace?;
 
     // Extract the final answer from the trace.
     // If no Finished step is present (e.g., agent was terminated by guard),
