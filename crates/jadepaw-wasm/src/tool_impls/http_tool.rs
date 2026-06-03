@@ -285,8 +285,26 @@ impl Tool for HttpRequestTool {
             &url_str,
         );
 
-        // Add headers
+        // Add headers with validation (WR-02).
+        // Block dangerous headers that could enable request smuggling or
+        // interfere with the HTTP connection state. Also reject header values
+        // containing CR/LF sequences that could enable header injection.
+        const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
+            "host",
+            "content-length",
+            "transfer-encoding",
+            "proxy-authorization",
+            "connection",
+            "expect",
+        ];
         for (key, value) in &headers {
+            let key_lower = key.to_lowercase();
+            if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
+                continue;
+            }
+            if value.contains('\r') || value.contains('\n') {
+                continue;
+            }
             request = request.header(key.as_str(), value.as_str());
         }
 
