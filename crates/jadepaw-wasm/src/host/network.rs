@@ -275,26 +275,13 @@ pub fn http_request_host_fn(
 
         let status_code = response.status().as_u16();
 
-        // 7. Read response body, capped at 1MB (T-04-07)
-        //    Consume body to free connection resources
-        const MAX_BODY_SIZE: usize = 1_048_576;
-        let body_bytes = match response.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(%session_id, "http_request: failed to read response body: {}", e);
-                return -1;
-            }
-        };
-
-        // Truncate if over limit (read fully for connection cleanup, discard excess)
-        let _body_len = body_bytes.len();
-        if _body_len > MAX_BODY_SIZE {
-            warn!(
-                %session_id,
-                "http_request: response body truncated ({} bytes, max {} bytes)",
-                _body_len, MAX_BODY_SIZE
-            );
-        }
+        // 7. Connection cleanup (T-04-07, CR-02 fix).
+        //    This host function only returns the status code (D-04b), so the
+        //    response body is never needed after extracting the status. Dropping
+        //    the response (rather than calling `response.bytes().await`) avoids
+        //    the DoS vector of allocating memory for arbitrarily large bodies.
+        //    reqwest's connection pool handles the underlying connection cleanup.
+        drop(response);
 
         // Return status code (D-04b: host fns return i32)
         status_code as i32
