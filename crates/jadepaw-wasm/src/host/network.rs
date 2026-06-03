@@ -177,7 +177,13 @@ pub fn http_request_host_fn(
             HashMap::new()
         } else {
             match std::str::from_utf8(headers_raw) {
-                Ok(s) => serde_json::from_str(s).unwrap_or_default(),
+                Ok(s) => match serde_json::from_str(s) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            warn!(%session_id, "http_request: invalid JSON in headers: {}", e);
+                            return -1;
+                        }
+                    },
                 Err(_) => {
                     warn!(%session_id, "http_request: invalid UTF-8 in headers");
                     return -1;
