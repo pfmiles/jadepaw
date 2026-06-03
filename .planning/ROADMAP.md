@@ -10,7 +10,7 @@
 - [x] **Phase 1: Project Foundation** — Workspace scaffold, crate structure, build system, CI (completed 2026-05-28)
 - [x] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation (completed 2026-05-30)
 - [x] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards (completed 2026-06-01)
-- [ ] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools
+- [x] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools (completed 2026-06-03)
 - [ ] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence
 - [ ] **Phase 6: Skill System** — Declarative SKILL.md format with hot loading and runtime swapping
 - [ ] **Phase 7: Web Chat UI** — Browser-based streaming chat interface via HTMX + SSE
@@ -107,7 +107,7 @@ Plans:
   3. Tools are registered through an MCP-compatible interface — a tool implemented for Claude Code should be usable by jadepaw with minimal adaptation
   4. A tool call that fails (e.g., file not found, HTTP 500) is reported back to the agent with structured error information, and the agent can adapt its next action accordingly
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1** *(types + registry — no dependencies)*
@@ -120,7 +120,7 @@ Plans:
 
 **Wave 3** *(integration — blocked on Wave 1 registry + Wave 2 impls)*
 
-- [ ] 04-03-PLAN.md — ReAct loop integration: ToolRegistry dispatch replaces placeholder Observation; run_agent() accepts optional ToolRegistry; system prompt augmented with tool list; SSE observation events carry is_error
+- [x] 04-03-PLAN.md — ReAct loop integration: ToolRegistry dispatch replaces placeholder Observation; run_agent() accepts optional ToolRegistry; system prompt augmented with tool list; SSE observation events carry is_error
 
 ### Phase 5: Session Memory
 
@@ -210,7 +210,7 @@ Plans:
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
-| 4. Tool System | 2/3 | In Progress|  |
+| 4. Tool System | 3/3 | Complete   | 2026-06-03 |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
 | 7. Web Chat UI | 0/? | Not started | — |
