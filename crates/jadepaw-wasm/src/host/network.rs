@@ -112,27 +112,33 @@ pub fn http_request_host_fn(
             }
         }
 
-        // Bounds-check remaining parameters for validation (T-02-09)
-        let _all_valid = {
-            let check = |ptr: i32, len: i32, name: &str| -> bool {
-                let _start = ptr as usize;
-                let len_usize = len as usize;
-                let end = _start.saturating_add(len_usize);
-                if end > mem_size {
-                    warn!(%session_id, "http_request: {} pointer out of bounds", name);
-                    false
-                } else {
-                    true
-                }
-            };
-            check(method_ptr, method_len, "method")
-                && check(headers_ptr, headers_len, "headers")
-                && check(body_ptr, body_len, "body")
+        // Bounds-check remaining parameters and compute validated end positions.
+        // The check closure uses checked_add instead of saturating_add, returning
+        // the validated end position so the subsequent slice operations can use it
+        // directly — eliminating the duplicate saturating_add at each call site.
+        let check = |ptr: i32, len: i32, name: &str| -> Option<usize> {
+            let start = ptr as usize;
+            let len_usize = len as usize;
+            let end = start.checked_add(len_usize)?;
+            if end > mem_size {
+                warn!(%session_id, "http_request: {} pointer out of bounds", name);
+                None
+            } else {
+                Some(end)
+            }
         };
-
-        if !_all_valid {
-            return -1;
-        }
+        let method_end = match check(method_ptr, method_len, "method") {
+            Some(e) => e,
+            None => return -1,
+        };
+        let headers_end = match check(headers_ptr, headers_len, "headers") {
+            Some(e) => e,
+            None => return -1,
+        };
+        let body_end = match check(body_ptr, body_len, "body") {
+            Some(e) => e,
+            None => return -1,
+        };
 
         // ── Phase 4: real HTTP execution ──
 
@@ -151,9 +157,8 @@ pub fn http_request_host_fn(
 
         // 2. Read method from guest memory (bounds-checked above)
         let method_start = method_ptr as usize;
-        let method_len_usize = method_len as usize;
         let method = match std::str::from_utf8(
-            &mem_data[method_start..method_start.saturating_add(method_len_usize)],
+            &mem_data[method_start..method_end],
         ) {
             Ok(s) => s.to_uppercase(),
             Err(e) => {
@@ -171,8 +176,7 @@ pub fn http_request_host_fn(
 
         // 3. Read headers from guest memory (bounds-checked above)
         let headers_start = headers_ptr as usize;
-        let headers_len_usize = headers_len as usize;
-        let headers_raw = &mem_data[headers_start..headers_start.saturating_add(headers_len_usize)];
+        let headers_raw = &mem_data[headers_start..headers_end];
         let headers: HashMap<String, String> = if headers_raw.is_empty() {
             HashMap::new()
         } else {
@@ -193,11 +197,10 @@ pub fn http_request_host_fn(
 
         // 4. Read body from guest memory (bounds-checked above)
         let body_start = body_ptr as usize;
-        let body_len_usize = body_len as usize;
-        let body: Option<Vec<u8>> = if body_len_usize == 0 {
+        let body: Option<Vec<u8>> = if body_start == body_end {
             None
         } else {
-            Some(mem_data[body_start..body_start.saturating_add(body_len_usize)].to_vec())
+            Some(mem_data[body_start..body_end].to_vec())
         };
 
         // 5. SSRF IP-layer check (defense-in-depth layer 2, T-04-04)
