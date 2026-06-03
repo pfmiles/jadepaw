@@ -92,6 +92,7 @@ pub async fn run_agent(
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
     // Run the agent loop under termination protection
+    let registry = ToolRegistry::new();
     let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
             &guard_config,
@@ -102,6 +103,7 @@ pub async fn run_agent(
             &user_message,
             context,
             &tx,
+            &registry,
         )
     })
     .await;

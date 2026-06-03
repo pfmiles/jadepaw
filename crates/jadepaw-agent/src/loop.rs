@@ -16,13 +16,18 @@
 use std::fmt;
 
 use anyhow::Context;
-use async_openai::{types::chat::ChatCompletionRequestMessage, Client, config::Config};
+use async_openai::{
+    types::chat::{ChatCompletionRequestMessage, ChatCompletionRequestUserMessage},
+    Client,
+    config::Config,
+};
 use jadepaw_core::ReActStep;
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
 
 use crate::guard::GuardConfig;
 use crate::llm::{self, LlmDirective};
+use crate::tool_registry::ToolRegistry;
 
 /// Structured error kind for the ReAct loop.
 ///
@@ -94,8 +99,9 @@ fn loop_error(kind: LoopErrorKind) -> anyhow::Error {
 /// 3. Parses the LLM response with `llm::parse_next_action()`
 /// 4. Based on the next action:
 ///    - `Finish` -> emits `ReActStep::Finished`, breaks the loop
-///    - `Act` -> emits `ReActStep::Action`, then a placeholder `Observation`
-///      (full tool execution is Phase 4)
+///    - `Act` -> dispatches through `ToolRegistry::call_tool()`, emits
+///      `ReActStep::Action` and `ReActStep::Observation` with real tool
+///      output, appends tool result to LLM message history
 ///    - `ContinueThinking` -> appends the response to history, continues
 /// 5. The full LLM response is emitted as a single `ReActStep::Thought` event via `tx`
 ///
@@ -115,6 +121,7 @@ pub async fn react_loop(
     user_message: &str,
     context: Option<&str>,
     tx: &mpsc::Sender<ReActStep>,
+    tool_registry: &ToolRegistry,
 ) -> anyhow::Result<Vec<ReActStep>> {
     let mut trace: Vec<ReActStep> = Vec::new();
 
@@ -207,7 +214,7 @@ pub async fn react_loop(
                 };
                 let action_step = ReActStep::Action {
                     tool: tool.clone(),
-                    args: parsed_args,
+                    args: parsed_args.clone(),
                 };
                 // Push before send (consistent with WR-02 Finish branch fix):
                 // the local trace must be complete before external notification.
@@ -216,18 +223,27 @@ pub async fn react_loop(
                     return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
 
-                // Emit placeholder observation (full tool execution in Phase 4)
+                // Phase 4: dispatch through ToolRegistry (replaces placeholder)
+                let tool_result = tool_registry.call_tool(&tool, parsed_args, session).await;
+                let is_error = tool_result.is_error();
+                let result_str = tool_result.to_observation_string();
+
                 let observation = ReActStep::Observation {
-                    result: format!(
-                        "Tool '{}' called with args '{}'. Full tool execution is coming in Phase 4.",
-                        tool, args
-                    ),
-                    is_error: false,
+                    result: result_str.clone(),
+                    is_error,
                 };
                 trace.push(observation.clone());
                 if tx.send(observation).await.is_err() {
                     return Err(loop_error(LoopErrorKind::ChannelClosed { turn }));
                 }
+
+                // Append tool result to LLM message history so the LLM can adapt
+                let observation_msg: ChatCompletionRequestMessage =
+                    ChatCompletionRequestUserMessage::from(
+                        format!("Tool '{}' result:\n{}", tool, result_str),
+                    )
+                    .into();
+                messages.push(observation_msg);
 
                 // Append the assistant's response to message history
                 let assistant_msg: ChatCompletionRequestMessage =
