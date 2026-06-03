@@ -139,6 +139,15 @@ pub struct ToolDefinition {
 ///
 /// `call()` should only be invoked through `ToolRegistry::call_tool()`.
 /// Direct calls bypass the `can_call_tool()` capability gate.
+///
+/// # Limitation (WR-06)
+///
+/// The `call()` signature receives only `SessionId`, not `SessionState` or
+/// `InstanceCapabilities`. This means per-operation capability enforcement
+/// (domain whitelist, path patterns) MUST happen at the Registry level in
+/// `ToolRegistry::call_tool()`, not inside individual `Tool` implementations.
+/// See `tool_registry.rs` for the http_request domain check as an example.
+/// A future refactor may extend the signature to accept capabilities directly.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Unique tool name (e.g., "file_read", "http_request").
