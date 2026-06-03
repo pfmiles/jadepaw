@@ -288,7 +288,7 @@ impl Tool for HttpRequestTool {
             request = request.body(body_str.clone());
         }
 
-        let response = match request.send().await {
+        let mut response = match request.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 warn!(%session_id, url = %url_str, "http_request: request failed: {}", e);
@@ -317,34 +317,57 @@ impl Tool for HttpRequestTool {
             })
             .collect();
 
-        // 8. Read response body, capped at 1MB (T-04-07)
-        let body_bytes = match response.text().await {
-            Ok(text) => text,
-            Err(e) => {
-                warn!(%session_id, url = %url_str, "http_request: failed to read response body: {}", e);
-                return ToolResult::Error {
-                    code: "READ_ERROR".to_string(),
-                    message: format!(
-                        "Failed to read response body from '{}': {}.",
-                        url_str, e
-                    ),
-                    retryable: true,
-                };
+        // 8. Read response body, capped at 1MB (T-04-07, CR-03 fix).
+        //    Use bounded chunked reading to avoid allocating the full response
+        //    body in memory before truncation. reqwest 0.12's `chunk()` returns
+        //    an async future per chunk; we loop until done or cap exceeded.
+        let (body_str, truncated) = {
+            use reqwest::Result as ReqwestResult;
+            let mut buf = Vec::with_capacity(MAX_RESPONSE_BODY_SIZE);
+            let mut total: usize = 0;
+            loop {
+                let chunk: ReqwestResult<Option<bytes::Bytes>> = response.chunk().await;
+                match chunk {
+                    Ok(Some(bytes)) => {
+                        total += bytes.len();
+                        if buf.len() < MAX_RESPONSE_BODY_SIZE {
+                            let space = MAX_RESPONSE_BODY_SIZE - buf.len();
+                            buf.extend_from_slice(&bytes[..bytes.len().min(space)]);
+                        }
+                        // If we've exceeded the cap, drain remaining chunks to free the connection
+                        if total > MAX_RESPONSE_BODY_SIZE {
+                            while let Ok(Some(_)) = response.chunk().await {}
+                            break;
+                        }
+                    }
+                    Ok(None) => break, // body complete
+                    Err(e) => {
+                        warn!(%session_id, url = %url_str, "http_request: failed to read response body: {}", e);
+                        return ToolResult::Error {
+                            code: "READ_ERROR".to_string(),
+                            message: format!(
+                                "Failed to read response body from '{}': {}.",
+                                url_str, e
+                            ),
+                            retryable: true,
+                        };
+                    }
+                }
             }
-        };
-
-        let (body_str, truncated) = if body_bytes.len() > MAX_RESPONSE_BODY_SIZE {
-            (
-                format!(
-                    "{}...\n[TRUNCATED: response body exceeded 1MB limit. {} bytes shown of {} total]",
-                    &body_bytes[..MAX_RESPONSE_BODY_SIZE],
-                    MAX_RESPONSE_BODY_SIZE,
-                    body_bytes.len()
-                ),
-                true,
-            )
-        } else {
-            (body_bytes, false)
+            let body_str = String::from_utf8_lossy(&buf).to_string();
+            if total > MAX_RESPONSE_BODY_SIZE {
+                (
+                    format!(
+                        "{}...\n[TRUNCATED: response body exceeded 1MB limit. {} bytes shown of {} total]",
+                        body_str,
+                        MAX_RESPONSE_BODY_SIZE,
+                        total
+                    ),
+                    true,
+                )
+            } else {
+                (body_str, false)
+            }
         };
 
         // 9. Build result based on status code
