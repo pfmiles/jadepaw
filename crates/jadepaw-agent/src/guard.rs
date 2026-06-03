@@ -54,6 +54,10 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<Vec<ReActStep>>>,
 {
+    // Record start time to compute actual elapsed wall-clock time for
+    // timeout termination (WR-03). The configured limit is passed as max_ms.
+    let start = tokio::time::Instant::now();
+
     tokio::select! {
         result = agent_loop() => {
             result.map_err(|e| {
@@ -104,11 +108,12 @@ where
         }
 
         _ = tokio::time::sleep(config.wall_clock_timeout) => {
-            let ms = config.wall_clock_timeout.as_millis() as u64;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let max_ms = config.wall_clock_timeout.as_millis() as u64;
             Err(JadepawError::agent_terminated(
                 AgentTerminationReason::WallClockTimeout {
-                    elapsed_ms: ms,
-                    max_ms: ms,
+                    elapsed_ms,
+                    max_ms,
                 },
             ))
         }
