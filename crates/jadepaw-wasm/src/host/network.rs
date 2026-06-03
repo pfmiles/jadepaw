@@ -9,6 +9,7 @@
 //!   any outbound connection. Default deny (empty DomainPattern whitelist).
 
 use std::future::Future;
+use std::net::IpAddr;
 
 use tracing::warn;
 use wasmtime::Caller;
@@ -136,7 +137,7 @@ pub fn http_request_host_fn(
 ///
 /// Handles both `http://example.com/path` and simple `example.com` forms.
 /// Returns the domain without port or path.
-fn extract_host_from_url(url: &str) -> &str {
+pub(crate) fn extract_host_from_url(url: &str) -> &str {
     // Strip scheme
     let after_scheme = if let Some(idx) = url.find("://") {
         &url[idx + 3..]
@@ -160,6 +161,33 @@ fn extract_host_from_url(url: &str) -> &str {
         &host_and_port[..idx]
     } else {
         host_and_port
+    }
+}
+
+/// Check if an IP address is blocked for outbound SSRF.
+///
+/// Returns `true` if the IP is in a private, loopback, link-local,
+/// multicast, broadcast, or unspecified range per D-03.
+///
+/// All methods used are stable on Rust 1.85+:
+/// - `is_unique_local` and `is_unicast_link_local` stabilized in 1.84.0
+pub(crate) fn is_blocked_ip(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => {
+            v4.is_private()       // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+                || v4.is_loopback()    // 127.0.0.0/8
+                || v4.is_link_local()  // 169.254.0.0/16
+                || v4.is_multicast()   // 224.0.0.0/4
+                || v4.is_broadcast()   // 255.255.255.255
+                || v4.is_unspecified() // 0.0.0.0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()            // ::1
+                || v6.is_unique_local()      // fc00::/7
+                || v6.is_unicast_link_local() // fe80::/10
+                || v6.is_multicast()         // ff00::/8
+                || v6.is_unspecified()       // ::
+        }
     }
 }
 
