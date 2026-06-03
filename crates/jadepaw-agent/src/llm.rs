@@ -285,6 +285,17 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
                     args: String::new(),
                 };
             }
+            // CR-01: If ACTION parsing failed and a FINAL ANSWER is known to
+            // follow (act_pos < fa_pos), try to extract it before giving up.
+            // Otherwise the agent silently loops, wasting LLM calls.
+            if let Some(fa) = fa_pos {
+                let answer = after_thought[fa + "FINAL ANSWER:".len()..]
+                    .trim()
+                    .to_string();
+                if !answer.is_empty() {
+                    return LlmDirective::Finish { thought, answer };
+                }
+            }
         }
         (Some(fa), None) => {
             let answer = after_thought[fa + "FINAL ANSWER:".len()..].trim().to_string();
