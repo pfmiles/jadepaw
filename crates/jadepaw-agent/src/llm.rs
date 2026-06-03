@@ -120,7 +120,11 @@ pub fn build_system_prompt_with_tools(
                 "- {}: {}\n  Parameters: {}",
                 t.name,
                 t.description,
-                serde_json::to_string(&t.input_schema).unwrap_or_default()
+                serde_json::to_string(&t.input_schema).unwrap_or_else(|e| {
+                    tracing::warn!(tool = %t.name, error = %e,
+                        "failed to serialize tool input_schema for prompt injection");
+                    format!("\"<serialization error: {}>\"", e)
+                })
             )
         })
         .collect();
