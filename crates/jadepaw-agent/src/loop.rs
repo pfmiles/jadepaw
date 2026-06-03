@@ -284,6 +284,15 @@ pub async fn react_loop(
         }
     }
 
+    let _ = tx
+        .send(ReActStep::Error {
+            message: format!(
+                "max iterations ({}) reached without completion",
+                guard_config.max_iterations
+            ),
+            turn: guard_config.max_iterations,
+        })
+        .await;
     return Err(loop_error(LoopErrorKind::MaxIterations {
         iter: guard_config.max_iterations,
         max: guard_config.max_iterations,
