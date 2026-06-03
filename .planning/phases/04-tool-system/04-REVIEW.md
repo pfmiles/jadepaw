@@ -1,157 +1,164 @@
 ---
 phase: 04-tool-system
-reviewed: 2026-06-03T12:00:00Z
+reviewed: 2026-06-03T22:10:00Z
 depth: standard
 files_reviewed: 22
 files_reviewed_list:
-  - crates/jadepaw-core/src/tool.rs
+  - Cargo.lock
+  - crates/jadepaw-agent/Cargo.toml
+  - crates/jadepaw-agent/src/lib.rs
+  - crates/jadepaw-agent/src/llm.rs
+  - crates/jadepaw-agent/src/loop.rs
+  - crates/jadepaw-agent/src/stream.rs
   - crates/jadepaw-agent/src/tool_registry.rs
+  - crates/jadepaw-agent/tests/agent_loop.rs
+  - crates/jadepaw-agent/tests/sse_streaming.rs
   - crates/jadepaw-core/src/agent_types.rs
   - crates/jadepaw-core/src/host_functions.rs
   - crates/jadepaw-core/src/lib.rs
-  - crates/jadepaw-agent/src/lib.rs
-  - crates/jadepaw-agent/Cargo.toml
-  - crates/jadepaw-agent/src/loop.rs
-  - crates/jadepaw-agent/src/stream.rs
+  - crates/jadepaw-core/src/tool.rs
   - crates/jadepaw-core/tests/agent_types.rs
   - crates/jadepaw-core/tests/host_functions.rs
-  - crates/jadepaw-agent/tests/sse_streaming.rs
-  - crates/jadepaw-wasm/src/tool_impls/mod.rs
-  - crates/jadepaw-wasm/src/tool_impls/http_tool.rs
-  - crates/jadepaw-wasm/src/tool_impls/file_tool.rs
   - crates/jadepaw-wasm/Cargo.toml
-  - crates/jadepaw-wasm/src/lib.rs
-  - crates/jadepaw-wasm/src/host/network.rs
   - crates/jadepaw-wasm/src/host/mod.rs
-  - Cargo.lock
-  - crates/jadepaw-agent/src/llm.rs
-  - crates/jadepaw-agent/tests/agent_loop.rs
+  - crates/jadepaw-wasm/src/host/network.rs
+  - crates/jadepaw-wasm/src/lib.rs
+  - crates/jadepaw-wasm/src/tool_impls/file_tool.rs
+  - crates/jadepaw-wasm/src/tool_impls/http_tool.rs
+  - crates/jadepaw-wasm/src/tool_impls/mod.rs
 findings:
   critical: 2
-  warning: 2
-  info: 1
-  total: 5
+  warning: 3
+  info: 2
+  total: 7
 status: issues_found
 ---
 
-# Phase 04: Code Review Report (Re-review)
+# Phase 04: Code Review Report (Second Re-review)
 
-**Reviewed:** 2026-06-03T12:00:00Z
+**Reviewed:** 2026-06-03T22:10:00Z
 **Depth:** standard
 **Files Reviewed:** 22
 **Status:** issues_found
 
 ## Summary
 
-This is the second adversarial re-review of Phase 04 (tool-system). All three warnings from the previous review (WR-01 shared constant for tool name, WR-02 deduplicated `extract_host_from_url`, WR-03 DNS resolution TODO) have been correctly fixed in commits 6403a43, a7bcb0b, and 4a1972e. The three info-level items (IN-01 dead session_id fields, IN-02 redundant lookup, IN-03 expect in library code) intentionally remain.
+This is the third adversarial review of Phase 04 (tool-system). Previous review findings (CR-01 userinfo bypass, CR-02 validate_url bypass, WR-01 IPv6 bracket handling, WR-02 silent header drops, IN-01 host_functions test gap) have been correctly fixed in commits `ebd9a27`, `3fbb2fa`, `195b83a`. This re-review targets the current state of the code after those fixes.
 
-However, this re-review uncovered two new issues not caught in the prior review:
-
-1. **CR-01 (Critical)**: `extract_host_from_url` is vulnerable to URL credential-based domain whitelist bypass. URLs containing a username that matches a whitelisted domain (e.g., `http://api.example.com:password@evil.com/path`) cause the function to return the username as the "host", allowing the request to pass the `can_access_domain` check while reqwest connects to the real host after the `@`.
-2. **CR-02 (Critical)**: The same credential-parsing flaw affects `HttpRequestTool::validate_url`, allowing a request with a fake whitelisted-domain username to pass Host validation and enter the SSRF check path against the wrong hostname.
-
-Two additional warnings cover silent error handling and missing test coverage.
+Two new critical SSRF bypass vectors were discovered that the existing SSRF IP check does not block. Three warnings address logic edge cases in the LLM parser, missing IP range coverage, and structural duplication. Two info items cover test gaps.
 
 ## Critical Issues
 
-### CR-01: Domain whitelist bypass via URL credentials in `extract_host_from_url`
+### CR-01: IPv4-mapped IPv6 address bypasses SSRF IP check
 
-**File:** `crates/jadepaw-core/src/tool.rs:35-60`
-**Issue:** The `extract_host_from_url` function strips the port by finding the first `:` after `://`:
+**File:** `crates/jadepaw-wasm/src/host/network.rs:305-322`
+**Issue:** The `is_blocked_ip` function checks IPv6 addresses for loopback (`::1`), unique local (`fc00::/7`), link-local (`fe80::/10`), multicast (`ff00::/8`), and unspecified (`::`). However, it does NOT check for IPv4-mapped IPv6 addresses (prefix `::ffff:0:0/96`).
 
-```rust
-if let Some(idx) = host_and_port.find(':') {
-    &host_and_port[..idx]
-}
-```
+An attacker can construct a URL using raw IPv6 bracket notation `http://[::ffff:127.0.0.1]/admin` or `http://[::ffff:10.0.0.1]/secret`. The extraction flow:
 
-This incorrectly handles URLs containing userinfo components (RFC 3986 `user:password@host`). For a URL like `http://api.example.com:mypassword@evil.com/path`:
+1. `extract_host_from_url("http://[::ffff:127.0.0.1]/admin")` returns `::ffff:127.0.0.1` (WR-01 IPv6 bracket fix handles this correctly)
+2. `is_blocked_ip(IpAddr::V6(...))` is called
+3. None of the IPv6 check methods match: `is_loopback()` only covers `::1`, not `::ffff:127.0.0.1`; `is_unique_local()` only covers `fc00::/7`; etc.
+4. The IP passes through SSRF validation
+5. reqwest connects to `http://[::ffff:127.0.0.1]/admin`, which on many systems resolves to the IPv4 loopback `127.0.0.1`
 
-1. `after_scheme` = `"api.example.com:mypassword@evil.com/path"`
-2. `host_and_port` = `"api.example.com:mypassword@evil.com"` (stripped path)
-3. `host_and_port.find(':')` finds the `:` in `api.example.com:mypassword`, returning `"api.example.com"`
+This also applies to IPv4-mapped private addresses like `::ffff:192.168.1.1` and `::ffff:10.0.0.1`.
 
-The function returns `"api.example.com"` (the username) instead of `"evil.com"` (the real host). This is used by two security-critical call sites:
+**Impact:** All internal IPv4 addresses can be reached by wrapping them in IPv4-mapped IPv6 notation. The domain whitelist in the registry is the primary defense, but if the whitelist contains `*` (allow all domains) or the IP corresponds to a whitelisted domain's DNS record (e.g., an internal IP behind a corporate DNS), the SSRF IP-layer defense-in-depth is bypassed.
 
-- **`ToolRegistry::call_tool`** (`crates/jadepaw-agent/src/tool_registry.rs:161`): The domain capability check calls `state.can_access_domain(host)` with the **wrong** hostname. If `api.example.com` is whitelisted, the check passes. But reqwest connects to `evil.com`.
-
-- **`http_request_host_fn`** (`crates/jadepaw-wasm/src/host/network.rs:100`): Same function used for the Wasm host function domain check. Same bypass applies.
-
-**Impact:** An attacker whose session has `api.example.com` in the `can_network_to` whitelist can access any arbitrary domain by constructing URLs like `http://api.example.com:anything@target.evil.com/`. The domain whitelist (the primary SSRF defense layer) is completely bypassed. The IP-layer SSRF check in `resolve_and_check_ssrf` provides a secondary defense but does not close this gap for public IPs.
-
-**Fix:** Strip userinfo before host extraction. Add a step between scheme removal and path removal to strip the `user:password@` portion:
+**Fix:** In `is_blocked_ip`, add a check for IPv4-mapped IPv6 addresses before the IPv6-specific checks. Use `Ipv6Addr::to_ipv4()` (stabilized in Rust 1.75) to extract the embedded IPv4 address and re-check it:
 
 ```rust
-pub fn extract_host_from_url(url: &str) -> &str {
-    // Strip scheme
-    let after_scheme = if let Some(idx) = url.find("://") {
-        &url[idx + 3..]
-    } else {
-        url
-    };
-
-    // Strip userinfo (user:password@) — CR-01 fix
-    let after_userinfo = if let Some(idx) = after_scheme.find('@') {
-        &after_scheme[idx + 1..]
-    } else {
-        after_scheme
-    };
-
-    // Strip path, query, fragment
-    let host_and_port = if let Some(idx) = after_userinfo.find('/') {
-        &after_userinfo[..idx]
-    } else if let Some(idx) = after_userinfo.find('?') {
-        &after_userinfo[..idx]
-    } else if let Some(idx) = after_userinfo.find('#') {
-        &after_userinfo[..idx]
-    } else {
-        after_userinfo
-    };
-
-    // Strip port
-    if let Some(idx) = host_and_port.find(':') {
-        &host_and_port[..idx]
-    } else {
-        host_and_port
+pub(crate) fn is_blocked_ip(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_shared()  // CR-02: 100.64.0.0/10
+        }
+        IpAddr::V6(v6) => {
+            // CR-01: convert IPv4-mapped IPv6 to IPv4 before checks
+            if let Some(v4) = v6.to_ipv4() {
+                return v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_multicast()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    || v4.is_shared();
+            }
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+        }
     }
 }
 ```
 
-Additionally, add a test for credential-bearing URLs and one with `@` in the auth component:
+Also add tests:
 
 ```rust
 #[test]
-fn extract_host_with_userinfo() {
-    // CR-01: userinfo must be stripped before host extraction
-    assert_eq!(extract_host_from_url("http://user:pass@example.com/path"), "example.com");
-    assert_eq!(extract_host_from_url("http://whitelisted.com:secret@evil.com/api"), "evil.com");
-    assert_eq!(extract_host_from_url("https://user@example.com"), "example.com");
+fn is_blocked_ip_v4_mapped_ipv6_loopback() {
+    // ::ffff:127.0.0.1 should be blocked
+    let addr: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+    assert!(is_blocked_ip(&addr));
+}
+
+#[test]
+fn is_blocked_ip_v4_mapped_ipv6_private() {
+    // ::ffff:192.168.1.1 should be blocked
+    let addr: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+    assert!(is_blocked_ip(&addr));
+}
+
+#[test]
+fn is_blocked_ip_v4_mapped_ipv6_public() {
+    // ::ffff:8.8.8.8 should NOT be blocked
+    let addr: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+    assert!(!is_blocked_ip(&addr));
 }
 ```
 
 ---
 
-### CR-02: `HttpRequestTool::validate_url` uses wrong hostname when URL contains credentials
+### CR-02: RFC 6598 shared address space (`100.64.0.0/10`) not blocked in SSRF IP check
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:145-175, 254-257`
-**Issue:** `HttpRequestTool::validate_url` calls `extract_host_from_url(url_str)` at line 162, which has the same credential bypass as described in CR-01. The extracted hostname is then passed to `resolve_and_check_ssrf(&host)` at line 265. This means:
+**File:** `crates/jadepaw-wasm/src/host/network.rs:306-322`
+**Issue:** The `is_blocked_ip` function for IPv4 checks `is_private()`, `is_loopback()`, `is_link_local()`, `is_multicast()`, `is_broadcast()`, and `is_unspecified()`, but does NOT check `is_shared()`. The `is_shared()` method (Rust 1.63+) covers RFC 6598 Carrier-Grade NAT address space `100.64.0.0/10`.
 
-1. DNS resolution + SSRF IP check is performed against the **username** (e.g., `api.example.com`) instead of the **real host** (e.g., `evil.com`)
-2. The SSRF check passes because `api.example.com` resolves to a public IP
-3. reqwest connects to `evil.com` without SSRF IP verification
+The shared address space is typically used by ISPs for CGNAT and cloud environments for internal networking (AWS uses it for VPC endpoints in some regions, GCP uses it for certain internal services). A host may have internal infrastructure accessible via these addresses.
 
-The defense-in-depth SSRF IP layer is rendered ineffective for credential-bearing URLs.
+**Impact:** An attacker with a whitelisted domain that resolves (or is coerced to resolve) to an address in `100.64.0.0/10` could reach the host's CGNAT/internal network. Combined with IPv4-mapped IPv6 (CR-01), this widens the SSRF attack surface.
 
-**Impact:** Same as CR-01 — the IP-layer SSRF check protects the wrong hostname and the real hostname receives no SSRF verification. The `is_blocked_ip` check never executes against `evil.com`'s IP addresses.
+**Fix:** Add `v4.is_shared()` to the IPv4 check chain in `is_blocked_ip`:
 
-**Fix:** This is fixed automatically by the CR-01 fix to `extract_host_from_url`, since `validate_url` delegates to that function. No separate code change needed in `HttpRequestTool`, but the test suite should verify that credential-bearing URLs are rejected by the domain capability check at the registry level. Add a test:
+```rust
+IpAddr::V4(v4) => {
+    v4.is_private()
+        || v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_multicast()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+        || v4.is_shared()  // 100.64.0.0/10
+}
+```
+
+Add test:
 
 ```rust
 #[test]
-fn extract_host_rejects_userinfo_url() {
-    // Verify CR-01 fix: userinfo portion is not treated as host
-    let host = extract_host_from_url("http://whitelisted.com:pwd@evil.com/path");
-    assert_eq!(host, "evil.com");
+fn is_blocked_ip_shared_address_space() {
+    // RFC 6598 CGNAT range should be blocked
+    assert!(is_blocked_ip(&"100.64.0.1".parse::<IpAddr>().unwrap()));
+    assert!(is_blocked_ip(&"100.127.255.254".parse::<IpAddr>().unwrap()));
 }
 ```
 
@@ -159,111 +166,108 @@ fn extract_host_rejects_userinfo_url() {
 
 ## Warnings
 
-### WR-01: `extract_host_from_url` does not handle IPv6 bracket notation
+### WR-01: `parse_next_action` produces malformed tool name when `ACTION:` is immediately followed by whitespace and `(`
 
-**File:** `crates/jadepaw-core/src/tool.rs:54-59`
-**Issue:** The port-stripping step finds the first `:`, which breaks on IPv6 addresses enclosed in brackets. For `https://[2001:db8::1]:8080/path`:
+**File:** `crates/jadepaw-agent/src/llm.rs:237-281`
+**Issue:** When the LLM produces `ACTION: (args)` (with a space between `ACTION:` and `(`), the parser behavior is incorrect:
 
-1. `after_scheme` = `"[2001:db8::1]:8080/path"`
-2. `host_and_port` = `"[2001:db8::1]:8080"` (correct — `/` found before `[` ends)
-3. `host_and_port.find(':')` finds the `:` inside `[2001:db8`, returning `"[2001"`
+1. Line 238: `action_str = "(args)".trim()` = `"(args)"`
+2. Line 243: `action_str.find('(')` = `Some(0)` (found at position 0)
+3. Line 244: `tool = action_str[..0].trim()` = `""` (empty string)
+4. `tool.is_empty()` is true, so we skip to the fallback at lines 273-281
+5. Line 274: `tool = "(args)"` (the trimmed action_str, which has no tool name)
+6. Line 276: `!(args).is_empty()` is true → returns `Act { tool: "(args)", args: "" }`
 
-The correct host should be `2001:db8::1`, but `"[2001"` is returned. This causes all IPv6 URLs to fail the domain capability check (default-deny since `"[2001"` won't match any `DomainPattern`).
+The tool name `"(args)"` is obviously invalid and will result in an `UNKNOWN_TOOL` error from `ToolRegistry`, but the error message will be confusing ("Unknown tool: '(args)'"). The correct behavior should be to recognize that no tool name precedes the opening parenthesis and fall through to `ContinueThinking`.
 
-**Impact:** IPv6 outbound connections are effectively blocked even when the domain is whitelisted. Not a security bypass (errs on denial side), but a functionality regression for environments using IPv6.
-
-**Fix:** Detect bracket notation before stripping the port:
+**Fix:** Check that the tool name (text before `(`) is non-empty before attempting paren matching. If the `(` is at position 0 of `action_str`, skip to the `ContinueThinking` fallback:
 
 ```rust
-// Strip port — handle IPv6 bracket notation [::1]:8080
-if host_and_port.starts_with('[') {
-    if let Some(idx) = host_and_port.find("]:") {
-        &host_and_port[1..idx]
-    } else if let Some(idx) = host_and_port.find(']') {
-        &host_and_port[1..idx]
+if let Some(paren_pos) = action_str.find('(') {
+    let tool = action_str[..paren_pos].trim().to_string();
+    if tool.is_empty() {
+        // Parenthesis found but no tool name before it.
+        // Fall through to ContinueThinking (WR-01).
     } else {
-        host_and_port
+        // ... existing paren matching logic ...
     }
-} else if let Some(idx) = host_and_port.find(':') {
-    &host_and_port[..idx]
-} else {
-    host_and_port
+}
+```
+
+Alternatively, modify the fallback at line 273 to check if the string starts with `(`:
+
+```rust
+// Fallback: treat entire string as tool name with empty args
+let tool = action_str.trim().to_string();
+if !tool.is_empty() && !tool.starts_with('(') {
+    return LlmDirective::Act { thought, tool, args: String::new() };
 }
 ```
 
 ---
 
-### WR-02: Silently skipping forbidden headers and CR/LF values without logging
+### WR-02: `resolve_and_check_ssrf` performs separate DNS resolution from reqwest, but results are not pinned — TOCTOU window exists
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:304-321`
-**Issue:** The request header validation loop silently skips forbidden headers (lines 314-316) and headers with CR/LF values (lines 317-319) using `continue`. No warning is logged, making it impossible to detect if an LLM is attempting to send prohibited headers or if there is a header injection attempt.
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:259-275`
+**Issue:** The SSRF IP check at line 265 calls `resolve_and_check_ssrf(&host)`, which independently resolves the hostname via `tokio::net::lookup_host`. The validated addresses are stored in `addrs` but never used for the actual reqwest request. At line 275, `let _ = &addrs;` is followed by a TODO comment documenting the double-DNS performance cost.
 
-```rust
-for (key, value) in &headers {
-    let key_lower = key.to_lowercase();
-    if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
-        continue;  // silently dropped — no logging
-    }
-    if value.contains('\r') || value.contains('\n') {
-        continue;  // silently dropped — no logging
-    }
-    request = request.header(key.as_str(), value.as_str());
-}
-```
+The actual reqwest request at lines 295-297 uses `url_str` directly, causing reqwest to perform its own DNS resolution internally. The TOCTOU window between the SSRF DNS resolution and reqwest's DNS resolution means:
 
-**Impact:** Security-relevant events (attempted header injection, LLM requesting forbidden headers) are invisible in production logs. Debugging network issues caused by dropped headers is difficult.
+1. A DNS rebinding attack could return a public IP during the SSRF check (line 265) and a private/internal IP during reqwest's resolution (line 338)
+2. The SSRF IP check runs once, but the connection target is determined by reqwest's resolution
 
-**Fix:** Add `tracing::warn` calls:
+**Impact:** DNS rebinding window is documented as an accepted risk per the module docs (lines 67-68), and this is a known limitation. However, the severity is elevated because the SSRF check is effectively an advisory check that doesn't constrain the actual connection target.
 
-```rust
-if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
-    tracing::warn!(
-        header = %key,
-        "http_request: forbidden header '{}' was dropped",
-        key
-    );
-    continue;
-}
-if value.contains('\r') || value.contains('\n') {
-    tracing::warn!(
-        header = %key,
-        "http_request: header '{}' value contains CR/LF — possible injection attempt, header dropped",
-        key
-    );
-    continue;
-}
-```
+**Fix:** The code already has a TODO at lines 271-274 documenting the proper fix: use `reqwest::ClientBuilder::dns_resolver()` with a custom resolver that uses the pre-validated addresses. In the short term, ensure the risk is documented in the security threat model. This is flagged as a WARNING rather than CRITICAL because (a) DNS rebinding requires the attacker to control a whitelisted domain's DNS, and (b) the domain whitelist is the primary defense.
+
+---
+
+### WR-03: SSRF IP check logic duplicated between `host/network.rs` and `tool_impls/http_tool.rs`
+
+**File:** `crates/jadepaw-wasm/src/host/network.rs:198-235` and `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:69-109`
+**Issue:** Both `http_request_host_fn` in `network.rs` and `resolve_and_check_ssrf` in `http_tool.rs` contain nearly identical DNS resolution + IP-checking logic (5-second timeout, `lookup_host`, iterate IPs, call `is_blocked_ip`). The error handling differs slightly: the host function returns `-1` for all failures, while the tool function returns structured `ToolResult::Error` variants with different error codes.
+
+**Impact:** Any future change to SSRF IP check logic (e.g., adding `is_shared()` coverage from CR-02, or fixing CR-01's IPv4-mapped IPv6) must be applied in two places. This is a maintenance hazard. The host function path (`network.rs`) already has the domain whitelist check (line 104), the scheme validation (lines 140-150), and the SSRF IP check all inline, creating substantial code duplication with `HttpRequestTool`.
+
+**Fix:** Extract the shared SSRF resolution logic into a common function, e.g., in `network.rs`, and have both call sites use it. The `resolve_and_check_ssrf` in `http_tool.rs` already has better error types; consider making it pub(crate) and having the host function also call it (translating the structured errors to the `-1` return convention).
 
 ---
 
 ## Info
 
-### IN-01: `host_functions.rs` test does not exercise `http_request` trait method
+### IN-01: `domain_matches` does not validate that pattern format is well-formed
+
+**File:** `crates/jadepaw-wasm/src/capability/mod.rs:104-124`
+**Issue:** The `domain_matches` function accepts any string as a pattern without validation. Patterns like `*.*.example.com` (multiple wildcards) or `*` (bare star) behave unexpectedly. `*.*.example.com` would strip prefix `*.` to get `*.example.com`, then check `domain.ends_with("*.example.com")` which would never match any domain (since the `*` is a literal character in the suffix). The `strip_prefix("*.")` at line 116 only strips the first `*.`.
+
+**Impact:** Administrators might configure `*.*.example.com` expecting it to match two levels of subdomains, but it would silently match nothing. The bare `*` pattern (line 106) matches anything, which could be unintentionally broad.
+
+**Fix:** Add validation at pattern registration time (in `DomainPattern::new()` or at registry startup) that rejects patterns containing internal `*` characters that are not at the beginning. Accept only `*`, `exact.domain.com`, `*.example.com` (single wildcard subdomain) formats. Alternatively, add a tracing warning for unrecognized patterns.
+
+---
+
+### IN-02: `host_functions.rs` test does not exercise `http_request` trait method
 
 **File:** `crates/jadepaw-core/tests/host_functions.rs:60-89`
-**Issue:** The `test_host_functions_trait_result_types` test verifies correct `Result` types for `log_message`, `file_read`, and `file_write`, but does not test `http_request`. The `TestHostFn` struct implements `http_request` (lines 37-48), but the test at lines 60-89 only exercises three of four methods. Any future signature change to `http_request` that breaks the return type would not be caught by this test.
+**Issue:** The `test_host_functions_trait_result_types` test verifies the `Result` types for `log_message`, `file_read`, and `file_write`, but does not test `http_request`. The `TestHostFn` struct implements `http_request` (lines 37-48), but the test only exercises three of the four methods.
 
-**Fix:** Add an `http_request` invocation to the test:
+**Impact:** Any future signature change to `http_request` that breaks the return type tuple `(u16, HashMap<String, String>, Vec<u8>)` would not be caught by this type-level test, potentially causing compilation failures only in downstream crates that use the `HostFunctions` trait.
+
+**Fix:** Add an `http_request` invocation to the test (as previously noted in prior review IN-01, still applicable):
 
 ```rust
 let result: Result<(u16, std::collections::HashMap<String, String>, Vec<u8>)> =
     rt.block_on(host.http_request(
         "GET".into(),
-        "http://example.com".into(),
+        "https://example.com".into(),
         std::collections::HashMap::new(),
         None,
     ));
 assert!(result.is_err());
-match result.unwrap_err() {
-    JadepawError::CapabilityDenied { operation, .. } => {
-        assert_eq!(operation, "http_request");
-    }
-    other => panic!("expected CapabilityDenied, got {other:?}"),
-}
 ```
 
 ---
 
-_Reviewed: 2026-06-03T12:00:00Z_
+_Reviewed: 2026-06-03T22:10:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
