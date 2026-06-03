@@ -129,6 +129,13 @@ pub async fn react_loop(
     let mut messages: Vec<ChatCompletionRequestMessage> =
         llm::build_initial_messages(system_prompt, user_message, context);
 
+    // TODO(WR-04): Implement message windowing to prevent unbounded context
+    // growth. Each ReAct turn adds 2 messages (observation + assistant response),
+    // and at max_iterations=20 the history reaches ~42 messages. Future work:
+    // - Sliding window: keep system + user + last N turns
+    // - Summarization: periodically condense older turns into a summary
+    // - Token counting: trim when approaching the model's context limit
+
     for turn in 0..guard_config.max_iterations {
         // Per-turn fuel reset (D-10 Pitfall 3)
         session
