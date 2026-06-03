@@ -40,4 +40,4 @@ pub use path::{normalize_path, validate_sandbox_path};
 pub use pool::{InstancePool, PoolConfig, SessionHandle};
 pub use session::{SessionLimits, SessionState};
 pub use tool_impls::file_tool::{FileReadTool, FileWriteTool};
-pub use tool_impls::http_tool::HttpRequestTool;
+pub use tool_impls::http_tool::{HttpRequestTool, HTTP_REQUEST_TOOL_NAME};

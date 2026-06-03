@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use jadepaw_core::{Tool, ToolDefinition, ToolId, ToolResult};
+use jadepaw_wasm::HTTP_REQUEST_TOOL_NAME;
 
 /// Central registry for all tools available to the agent.
 ///
@@ -156,7 +157,7 @@ impl ToolRegistry {
             // HttpRequestTool::call() only has SessionId, not SessionState, so it
             // cannot access the can_network_to whitelist. This check closes the
             // gap by enforcing domain capability at the Registry level (D-01a).
-            if name == "http_request" {
+            if name == HTTP_REQUEST_TOOL_NAME {
                 if let Some(host) = extract_host_from_tool_args(&args) {
                     if !state.can_access_domain(&host) {
                         return ToolResult::from_error(

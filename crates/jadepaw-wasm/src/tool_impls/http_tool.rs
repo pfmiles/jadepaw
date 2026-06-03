@@ -33,6 +33,13 @@ use tracing::warn;
 
 use crate::host::network::{extract_host_from_url, is_blocked_ip};
 
+/// Canonical tool name constant.
+///
+/// Shared with `ToolRegistry` so the domain capability check is not
+/// coupled to a hardcoded string literal. If `HttpRequestTool::name()`
+/// is refactored, this constant must also be updated.
+pub const HTTP_REQUEST_TOOL_NAME: &str = "http_request";
+
 /// Response body size cap (1MB per D-03a).
 const MAX_RESPONSE_BODY_SIZE: usize = 1_048_576;
 
