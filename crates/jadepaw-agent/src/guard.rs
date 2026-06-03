@@ -116,8 +116,8 @@ where
         }
 
         _ = tokio::time::sleep(config.wall_clock_timeout) => {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-            let max_ms = config.wall_clock_timeout.as_millis() as u64;
+            let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let max_ms = u64::try_from(config.wall_clock_timeout.as_millis()).unwrap_or(u64::MAX);
             Err(JadepawError::agent_terminated(
                 AgentTerminationReason::WallClockTimeout {
                     elapsed_ms,
