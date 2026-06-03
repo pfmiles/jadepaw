@@ -75,8 +75,12 @@ pub enum ReActStep {
     },
     /// An observation step — the result of a tool invocation.
     Observation {
-        /// The result returned by the tool.
+        /// The result returned by the tool (formatted for LLM consumption).
         result: String,
+        /// Whether the observation represents an error.
+        /// Defaults to false for backward compatibility with Phase 3 traces.
+        #[serde(default)]
+        is_error: bool,
     },
     /// An error occurred during a turn.
     Error {

@@ -33,6 +33,19 @@ impl HostFunctions for TestHostFn {
             detail: "test stub".to_string(),
         })
     }
+
+    async fn http_request(
+        &self,
+        _method: String,
+        _url: String,
+        _headers: std::collections::HashMap<String, String>,
+        _body: Option<Vec<u8>>,
+    ) -> Result<(u16, std::collections::HashMap<String, String>, Vec<u8>)> {
+        Err(JadepawError::CapabilityDenied {
+            operation: "http_request".to_string(),
+            detail: "test stub".to_string(),
+        })
+    }
 }
 
 /// Verify that a struct implementing HostFunctions compiles.

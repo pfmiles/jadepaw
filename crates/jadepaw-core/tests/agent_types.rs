@@ -85,6 +85,7 @@ fn react_step_action_serde_roundtrip() {
 fn react_step_observation_serde_roundtrip() {
     let step = ReActStep::Observation {
         result: "file contents: hello world".to_string(),
+        is_error: false,
     };
     let json = serde_json::to_string(&step).expect("serialize failed");
     let roundtripped: ReActStep = serde_json::from_str(&json).expect("deserialize failed");
