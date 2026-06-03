@@ -10,6 +10,7 @@
 //! - Configuration structs (global, tenant, session layers)
 //! - HostFunctions trait — canonical guest-host communication contract
 //! - InstanceCapabilities — capability whitelist with default-deny semantics
+//! - Tool trait, ToolResult, ToolDefinition — agent-level tool abstraction
 //!
 //! ## What does NOT live here
 //!
@@ -22,6 +23,7 @@ pub mod capabilities;
 pub mod error;
 pub mod guest_exports;
 pub mod host_functions;
+pub mod tool;
 pub mod types;
 
 // Re-export all public types at crate root for convenient imports.
@@ -30,4 +32,5 @@ pub use capabilities::{DomainPattern, InstanceCapabilities, PathPattern};
 pub use error::{JadepawError, Result};
 pub use guest_exports::{GuestExports, NextAction, ToolChoice, ToolDef};
 pub use host_functions::HostFunctions;
+pub use tool::{Tool, ToolDefinition, ToolResult};
 pub use types::{SessionId, TenantId, ToolId};
