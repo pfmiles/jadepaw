@@ -249,11 +249,18 @@ impl Tool for HttpRequestTool {
             Err(e) => return e,
         };
 
-        // 3. SSRF IP-layer check (defense-in-depth layer 2, per D-03)
-        let _addrs = match resolve_and_check_ssrf(&host).await {
+        // 3. SSRF IP-layer check (defense-in-depth layer 2, per D-03).
+        //    NOTE: The resolved addresses are validated for SSRF but cannot be
+        //    pinned to the subsequent reqwest request without per-request client
+        //    construction, which conflicts with connection reuse. The TOCTOU
+        //    window for DNS rebinding between this check and reqwest's own DNS
+        //    resolution is an accepted risk for MVP (see module-level docs).
+        let addrs = match resolve_and_check_ssrf(&host).await {
             Ok(addrs) => addrs,
             Err(e) => return e,
         };
+        // Silence unused warning: addrs validated but not pinned to request.
+        let _ = &addrs;
 
         // 4. Extract optional headers
         let headers: HashMap<String, String> = args
