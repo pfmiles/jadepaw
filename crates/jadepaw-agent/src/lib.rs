@@ -51,6 +51,9 @@ use jadepaw_wasm::{InstancePool, SessionState};
 /// consume directly.
 ///
 /// The system prompt defaults to `llm::REACT_SYSTEM_PROMPT` unless overridden.
+/// When `tool_registry` is provided, available tool descriptions are injected
+/// into the system prompt via `build_system_prompt_with_tools()`. Pass `None`
+/// to run the agent without tools (backward compatible with Phase 3 behavior).
 ///
 /// # Errors
 ///
@@ -63,6 +66,7 @@ pub async fn run_agent(
     pool: Arc<InstancePool>,
     llm_client: Client<Box<dyn Config>>,
     model: &str,
+    tool_registry: Option<Arc<ToolRegistry>>,
 ) -> core::result::Result<(AgentResponse, impl Stream<Item = core::result::Result<Event, Infallible>>), JadepawError>
 {
     let session_id = req.session_id;
@@ -89,17 +93,25 @@ pub async fn run_agent(
     let (tx, sse_stream) = stream::create_sse_channel();
 
     let guard_config = guard::GuardConfig::default();
+    let registry = tool_registry.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
+    // Augment system prompt with tool descriptions if tools are registered
+    let tool_definitions = registry.list_tools();
+    let augmented_prompt = if tool_definitions.is_empty() {
+        system_prompt.to_string()
+    } else {
+        llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
+    };
+
     // Run the agent loop under termination protection
-    let registry = ToolRegistry::new();
     let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
             &guard_config,
             &mut handle,
             &llm_client,
             model,
-            system_prompt,
+            &augmented_prompt,
             &user_message,
             context,
             &tx,
@@ -148,7 +160,8 @@ pub async fn run_agent(
 // Re-export key public types
 pub use guard::{run_with_guard, GuardConfig};
 pub use llm::{
-    REACT_SYSTEM_PROMPT, build_initial_messages, parse_next_action, stream_llm_response,
+    REACT_SYSTEM_PROMPT, build_initial_messages, build_system_prompt_with_tools,
+    parse_next_action, stream_llm_response,
 };
 pub use r#loop::react_loop;
 pub use stream::create_sse_channel;

@@ -24,7 +24,7 @@ use async_openai::{
     },
 };
 use futures::StreamExt;
-use jadepaw_core::ReActStep;
+use jadepaw_core::{ReActStep, ToolDefinition};
 use tokio::sync::mpsc;
 
 /// Hardcoded ReAct system prompt.
@@ -99,6 +99,37 @@ pub fn build_initial_messages(
         ChatCompletionRequestUserMessage::from(user_text).into();
 
     vec![system_msg, user_msg]
+}
+
+/// Augment the system prompt with available tool descriptions.
+///
+/// Tools are injected in MCP tools/list format so the LLM knows what
+/// tools it can call and their parameter schemas.
+pub fn build_system_prompt_with_tools(
+    base_prompt: &str,
+    tools: &[ToolDefinition],
+) -> String {
+    if tools.is_empty() {
+        return base_prompt.to_string();
+    }
+
+    let tool_descriptions: Vec<String> = tools
+        .iter()
+        .map(|t| {
+            format!(
+                "- {}: {}\n  Parameters: {}",
+                t.name,
+                t.description,
+                serde_json::to_string(&t.input_schema).unwrap_or_default()
+            )
+        })
+        .collect();
+
+    format!(
+        "{}\n\nAvailable tools:\n{}\n\nWhen calling a tool, use the exact tool name and provide parameters as a JSON object.",
+        base_prompt,
+        tool_descriptions.join("\n")
+    )
 }
 
 /// Stream an LLM chat completion response and accumulate the full text.
