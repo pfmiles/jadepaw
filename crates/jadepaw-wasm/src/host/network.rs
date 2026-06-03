@@ -302,17 +302,59 @@ pub(crate) fn extract_host_from_url(url: &str) -> &str {
 ///
 /// All methods used are stable on Rust 1.85+:
 /// - `is_unique_local` and `is_unicast_link_local` stabilized in 1.84.0
+/// Check if an IPv4 address is in the RFC 6598 shared address space.
+///
+/// `is_shared()` (tracking issue #27709) is not yet stable as of Rust 1.95.
+/// Implement the check manually: 100.64.0.0/10 = 100.64.0.0 .. 100.127.255.255.
+fn is_shared_v4(v4: &std::net::Ipv4Addr) -> bool {
+    let octets = v4.octets();
+    octets[0] == 100 && (octets[1] >= 64 && octets[1] <= 127)
+}
+
+/// Check if an IPv4 address is blocked for outbound SSRF.
+fn is_blocked_v4(v4: &std::net::Ipv4Addr) -> bool {
+    v4.is_private()       // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+        || v4.is_loopback()    // 127.0.0.0/8
+        || v4.is_link_local()  // 169.254.0.0/16
+        || v4.is_multicast()   // 224.0.0.0/4
+        || v4.is_broadcast()   // 255.255.255.255
+        || v4.is_unspecified() // 0.0.0.0
+        || is_shared_v4(v4)    // 100.64.0.0/10 (RFC 6598 CGNAT)
+}
+
+/// Check if an IPv6 address is an IPv4-mapped address.
+///
+/// IPv4-mapped IPv6 addresses have the prefix `::ffff:0:0/96` and can embed
+/// any IPv4 address. `Ipv6Addr::to_ipv4()` returns `Some` for both
+/// IPv4-mapped (`::ffff:x.x.x.x`) and IPv4-compatible (`::x.x.x.x`, deprecated)
+/// formats. We narrow the check to only true IPv4-mapped addresses because
+/// real IPv6 addresses (like `::1`) also return `Some` from `to_ipv4()`
+/// (as `Some(0.0.0.1)`) but are NOT IPv4-mapped — they must be checked
+/// against the IPv6 blocklist, not the IPv4 one.
+fn is_ipv4_mapped(v6: &std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    // IPv4-mapped prefix: ::ffff:0:0/96 → segments[0..5] == [0, 0, 0, 0, 0, 0xFFFF]
+    match v6.segments() {
+        [0, 0, 0, 0, 0, 0xFFFF, a, b] => {
+            let v4_octets = [((a >> 8) & 0xFF) as u8, (a & 0xFF) as u8,
+                             ((b >> 8) & 0xFF) as u8, (b & 0xFF) as u8];
+            Some(std::net::Ipv4Addr::from(v4_octets))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn is_blocked_ip(addr: &IpAddr) -> bool {
     match addr {
-        IpAddr::V4(v4) => {
-            v4.is_private()       // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-                || v4.is_loopback()    // 127.0.0.0/8
-                || v4.is_link_local()  // 169.254.0.0/16
-                || v4.is_multicast()   // 224.0.0.0/4
-                || v4.is_broadcast()   // 255.255.255.255
-                || v4.is_unspecified() // 0.0.0.0
-        }
+        IpAddr::V4(v4) => is_blocked_v4(v4),
         IpAddr::V6(v6) => {
+            // CR-01: Convert IPv4-mapped IPv6 to IPv4 before checks.
+            // An attacker can wrap internal IPv4 addresses as ::ffff:127.0.0.1
+            // to bypass the IPv6-specific checks below (e.g., ::1 does not match
+            // ::ffff:127.0.0.1). Extracting the embedded IPv4 first closes this
+            // bypass while preserving all IPv4 checks including shared (CR-02).
+            if let Some(v4) = is_ipv4_mapped(v6) {
+                return is_blocked_v4(&v4);
+            }
             v6.is_loopback()            // ::1
                 || v6.is_unique_local()      // fc00::/7
                 || v6.is_unicast_link_local() // fe80::/10
@@ -344,5 +386,76 @@ mod tests {
     #[test]
     fn extract_host_bare_domain() {
         assert_eq!(extract_host_from_url("example.com"), "example.com");
+    }
+
+    // ── is_blocked_ip tests ──
+
+    #[test]
+    fn is_blocked_ip_v4_loopback() {
+        assert!(is_blocked_ip(&"127.0.0.1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn is_blocked_ip_v4_private() {
+        assert!(is_blocked_ip(&"192.168.1.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip(&"10.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip(&"172.16.0.1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn is_blocked_ip_v4_public() {
+        assert!(!is_blocked_ip(&"8.8.8.8".parse::<IpAddr>().unwrap()));
+        assert!(!is_blocked_ip(&"1.1.1.1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn is_blocked_ip_v6_loopback() {
+        assert!(is_blocked_ip(&"::1".parse::<IpAddr>().unwrap()));
+    }
+
+    #[test]
+    fn is_blocked_ip_v6_public() {
+        assert!(!is_blocked_ip(
+            &"2001:4860:4860::8888".parse::<IpAddr>().unwrap()
+        ));
+    }
+
+    // CR-02: RFC 6598 shared address space (100.64.0.0/10) must be blocked
+    #[test]
+    fn is_blocked_ip_shared_address_space() {
+        assert!(is_blocked_ip(&"100.64.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_blocked_ip(&"100.127.255.254".parse::<IpAddr>().unwrap()));
+    }
+
+    // CR-01: IPv4-mapped IPv6 addresses must be checked against IPv4 blocklist
+    #[test]
+    fn is_blocked_ip_v4_mapped_ipv6_loopback() {
+        // ::ffff:127.0.0.1 should be blocked (loopback)
+        let addr: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_blocked_ip(&addr));
+    }
+
+    #[test]
+    fn is_blocked_ip_v4_mapped_ipv6_private() {
+        // ::ffff:192.168.1.1 should be blocked (private)
+        let addr: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+        assert!(is_blocked_ip(&addr));
+        // ::ffff:10.0.0.1 should be blocked (private)
+        let addr2: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(is_blocked_ip(&addr2));
+    }
+
+    #[test]
+    fn is_blocked_ip_v4_mapped_ipv6_shared() {
+        // ::ffff:100.64.0.1 should be blocked (CGNAT, CR-02 cross-check)
+        let addr: IpAddr = "::ffff:100.64.0.1".parse().unwrap();
+        assert!(is_blocked_ip(&addr));
+    }
+
+    #[test]
+    fn is_blocked_ip_v4_mapped_ipv6_public() {
+        // ::ffff:8.8.8.8 should NOT be blocked (public)
+        let addr: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        assert!(!is_blocked_ip(&addr));
     }
 }
