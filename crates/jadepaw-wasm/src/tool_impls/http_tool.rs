@@ -301,11 +301,21 @@ impl Tool for HttpRequestTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // 6. Build and execute the reqwest request
-        let mut request = self.client.request(
-            method.parse::<reqwest::Method>().unwrap_or(reqwest::Method::GET),
-            &url_str,
-        );
+        // 6. Build and execute the reqwest request.
+        // WR-03: Use an explicit match rather than string-parsing with a
+        // fallback. The method was already validated against allowed_methods
+        // (line 240), so any parse failure represents an internal logic error.
+        // An explicit match makes the invariant visible and eliminates the
+        // string-to-enum parse step.
+        let reqwest_method = match method.as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "PATCH" => reqwest::Method::PATCH,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => unreachable!("method validated against allowed_methods"),
+        };
+        let mut request = self.client.request(reqwest_method, &url_str);
 
         // Add headers with validation (WR-02).
         // Block dangerous headers that could enable request smuggling or
