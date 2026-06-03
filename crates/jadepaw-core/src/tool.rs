@@ -40,15 +40,25 @@ pub fn extract_host_from_url(url: &str) -> &str {
         url
     };
 
-    // Strip path, query, fragment
-    let host_and_port = if let Some(idx) = after_scheme.find('/') {
-        &after_scheme[..idx]
-    } else if let Some(idx) = after_scheme.find('?') {
-        &after_scheme[..idx]
-    } else if let Some(idx) = after_scheme.find('#') {
-        &after_scheme[..idx]
+    // Strip userinfo (user:password@) — CR-01: prevent credential-based
+    // domain whitelist bypass. A URL like
+    // `http://whitelisted.com:pwd@evil.com/path` would otherwise return
+    // the username as the "host", defeating the domain capability check.
+    let after_userinfo = if let Some(idx) = after_scheme.find('@') {
+        &after_scheme[idx + 1..]
     } else {
         after_scheme
+    };
+
+    // Strip path, query, fragment
+    let host_and_port = if let Some(idx) = after_userinfo.find('/') {
+        &after_userinfo[..idx]
+    } else if let Some(idx) = after_userinfo.find('?') {
+        &after_userinfo[..idx]
+    } else if let Some(idx) = after_userinfo.find('#') {
+        &after_userinfo[..idx]
+    } else {
+        after_userinfo
     };
 
     // Strip port
@@ -219,3 +229,50 @@ pub trait Tool: Send + Sync {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── extract_host_from_url tests ──────────────────────────────────
+
+    #[test]
+    fn extract_host_basic() {
+        assert_eq!(extract_host_from_url("https://example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn extract_host_with_port() {
+        assert_eq!(extract_host_from_url("http://localhost:8080/api"), "localhost");
+    }
+
+    #[test]
+    fn extract_host_no_scheme() {
+        assert_eq!(extract_host_from_url("api.example.com/v1"), "api.example.com");
+    }
+
+    #[test]
+    fn extract_host_bare_domain() {
+        assert_eq!(extract_host_from_url("example.com"), "example.com");
+    }
+
+    /// CR-01: userinfo portion must be stripped before host extraction
+    /// to prevent domain whitelist bypass via URLs like
+    /// `http://whitelisted.com:pwd@evil.com/path`.
+    #[test]
+    fn extract_host_with_userinfo() {
+        assert_eq!(
+            extract_host_from_url("http://user:pass@example.com/path"),
+            "example.com"
+        );
+        assert_eq!(
+            extract_host_from_url("http://whitelisted.com:secret@evil.com/api"),
+            "evil.com"
+        );
+        assert_eq!(
+            extract_host_from_url("https://user@example.com"),
+            "example.com"
+        );
+    }
+
+    }
