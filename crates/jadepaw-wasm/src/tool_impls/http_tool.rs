@@ -312,9 +312,19 @@ impl Tool for HttpRequestTool {
         for (key, value) in &headers {
             let key_lower = key.to_lowercase();
             if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
+                tracing::warn!(
+                    header = %key,
+                    "http_request: forbidden header '{}' was dropped",
+                    key
+                );
                 continue;
             }
             if value.contains('\r') || value.contains('\n') {
+                tracing::warn!(
+                    header = %key,
+                    "http_request: header '{}' value contains CR/LF — possible injection attempt, header dropped",
+                    key
+                );
                 continue;
             }
             request = request.header(key.as_str(), value.as_str());
