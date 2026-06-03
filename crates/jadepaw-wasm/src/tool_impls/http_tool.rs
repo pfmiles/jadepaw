@@ -38,7 +38,7 @@ use reqwest::redirect;
 use serde_json::Value;
 use tracing::warn;
 
-use crate::host::network::{extract_host_from_url, is_blocked_ip};
+use crate::host::network::{extract_host_from_url, resolve_and_check_ssrf_addr, SsrfDnsError};
 
 /// Canonical tool name constant.
 ///
@@ -65,54 +65,52 @@ fn build_http_client() -> reqwest::Client {
 
 /// Resolve the hostname and check all resolved IPs for SSRF.
 ///
-/// Wraps `tokio::net::lookup_host` in a 5-second timeout (Pitfall 4).
-/// Returns `Ok(Vec<SocketAddr>)` if all IPs are public, or
-/// `Err(ToolResult::Error)` if any IP is blocked or DNS fails/times out.
+/// Thin wrapper around the shared `resolve_and_check_ssrf_addr` in
+/// `host::network` (WR-03). Converts `SsrfDnsError` variants to
+/// `ToolResult::Error` with appropriate error codes for the agent
+/// tool API.
 ///
 /// # Known risk (T-04-04)
 ///
 /// DNS rebinding: an attacker controlling the DNS for a whitelisted domain
-/// can race this check. Accepted risk for MVP.
+/// can race this check. Accepted risk for MVP. See module-level docs for
+/// TOCTOU details (WR-02).
 async fn resolve_and_check_ssrf(host: &str) -> Result<Vec<SocketAddr>, ToolResult> {
-    let addrs: Vec<SocketAddr> = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::lookup_host(format!("{}:0", host)),
-    )
-    .await
-    .map_err(|_| ToolResult::Error {
-        code: "DNS_TIMEOUT".to_string(),
-        message: format!(
-            "DNS resolution timed out for host '{}'. The DNS server did not respond within 5 seconds.",
-            host
-        ),
-        retryable: true,
-    })?
-    .map_err(|e| ToolResult::Error {
-        code: "DNS_ERROR".to_string(),
-        message: format!(
-            "DNS resolution failed for host '{}': {}. Check the hostname and try again.",
-            host, e
-        ),
-        retryable: true,
-    })?
-    .collect();
-
-    // Check all resolved IPs for SSRF (defense-in-depth layer 2, per D-03)
-    for addr in &addrs {
-        if is_blocked_ip(&addr.ip()) {
-            return Err(ToolResult::Error {
-                code: "SSRF_BLOCKED".to_string(),
-                message: format!(
-                    "Host '{}' resolved to blocked IP address {} (private/loopback/link-local/multicast). \
-                     Only public IP addresses are allowed.",
-                    host, addr.ip()
-                ),
-                retryable: false,
-            });
-        }
-    }
-
-    Ok(addrs)
+    resolve_and_check_ssrf_addr(host).await.map_err(|e| match e {
+        SsrfDnsError::Timeout => ToolResult::Error {
+            code: "DNS_TIMEOUT".to_string(),
+            message: format!(
+                "DNS resolution timed out for host '{}'. The DNS server did not respond within 5 seconds.",
+                host
+            ),
+            retryable: true,
+        },
+        SsrfDnsError::DnsError(err) => ToolResult::Error {
+            code: "DNS_ERROR".to_string(),
+            message: format!(
+                "DNS resolution failed for host '{}': {}. Check the hostname and try again.",
+                host, err
+            ),
+            retryable: true,
+        },
+        SsrfDnsError::Blocked { host: _, ip } => ToolResult::Error {
+            code: "SSRF_BLOCKED".to_string(),
+            message: format!(
+                "Host '{}' resolved to blocked IP address {} (private/loopback/link-local/multicast). \
+                 Only public IP addresses are allowed.",
+                host, ip
+            ),
+            retryable: false,
+        },
+        SsrfDnsError::NoAddresses => ToolResult::Error {
+            code: "DNS_ERROR".to_string(),
+            message: format!(
+                "DNS returned no addresses for host '{}'. Check the hostname and try again.",
+                host
+            ),
+            retryable: true,
+        },
+    })
 }
 
 /// Tool that makes real HTTP requests with SSRF protection.

@@ -195,45 +195,30 @@ pub fn http_request_host_fn(
         };
 
         // 5. SSRF IP-layer check (defense-in-depth layer 2, T-04-04)
-        //    DNS resolution wrapped in 5s timeout (T-04-08, Pitfall 4)
-        let domain_for_dns = domain.to_string();
-        let addrs_result = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::net::lookup_host(format!("{}:0", domain_for_dns)),
-        )
-        .await;
-
-        let addrs = match addrs_result {
-            Ok(Ok(iter)) => {
-                let addrs: Vec<std::net::SocketAddr> = iter.collect();
-                // Check all resolved IPs for SSRF (T-04-04)
-                for addr in &addrs {
-                    if is_blocked_ip(&addr.ip()) {
-                        warn!(
-                            %session_id,
-                            "http_request: SSRF blocked — host '{}' resolved to {}",
-                            domain, addr.ip()
-                        );
-                        return -1;
-                    }
-                }
-                addrs
-            }
-            Ok(Err(e)) => {
-                warn!(%session_id, "http_request: DNS error for '{}': {}", domain, e);
-                return -1;
-            }
-            Err(_timeout) => {
+        //    Uses the shared resolve_and_check_ssrf_addr from WR-03.
+        let _addrs = match resolve_and_check_ssrf_addr(&domain).await {
+            Ok(addrs) => addrs,
+            Err(SsrfDnsError::Timeout) => {
                 warn!(%session_id, "http_request: DNS timeout for '{}'", domain);
                 return -1;
             }
+            Err(SsrfDnsError::DnsError(e)) => {
+                warn!(%session_id, "http_request: DNS error for '{}': {}", domain, e);
+                return -1;
+            }
+            Err(SsrfDnsError::NoAddresses) => {
+                warn!(%session_id, "http_request: DNS returned no addresses for '{}'", domain);
+                return -1;
+            }
+            Err(SsrfDnsError::Blocked { host: _, ip }) => {
+                warn!(
+                    %session_id,
+                    "http_request: SSRF blocked — host '{}' resolved to {}",
+                    domain, ip
+                );
+                return -1;
+            }
         };
-
-        // If DNS returned no addresses, fail
-        if addrs.is_empty() {
-            warn!(%session_id, "http_request: DNS returned no addresses for '{}'", domain);
-            return -1;
-        }
 
         // 6. Build and execute the reqwest request (T-04-05, T-04-07)
         let client = match reqwest::Client::builder()
@@ -286,6 +271,57 @@ pub fn http_request_host_fn(
         // Return status code (D-04b: host fns return i32)
         status_code as i32
     })
+}
+
+/// Error type for SSRF DNS resolution failures.
+///
+/// Used by `resolve_and_check_ssrf` to convey specific failure reasons
+/// that each caller (host function and HttpRequestTool) can convert to
+/// their own error conventions.
+#[derive(Debug)]
+#[allow(dead_code)] // host field used by http_tool.rs path, ip used by host fn path
+pub(crate) enum SsrfDnsError {
+    /// DNS resolution timed out (5s).
+    Timeout,
+    /// DNS resolution returned an error.
+    DnsError(String),
+    /// One or more resolved IPs are in a blocked range.
+    Blocked { host: String, ip: std::net::IpAddr },
+    /// DNS returned no addresses.
+    NoAddresses,
+}
+
+/// Resolve a hostname and check all resolved IPs for SSRF (WR-03).
+///
+/// Shared between `http_request_host_fn` (network.rs) and `HttpRequestTool::call`
+/// (http_tool.rs). Wraps `tokio::net::lookup_host` in a 5-second timeout per
+/// Pitfall 4 / T-04-08, then checks each resolved IP against `is_blocked_ip`.
+///
+/// # Returns
+///
+/// - `Ok(Vec<SocketAddr>)` if all IPs are public.
+/// - `Err(SsrfDnsError)` with a specific variant on failure.
+pub(crate) async fn resolve_and_check_ssrf_addr(host: &str) -> Result<Vec<std::net::SocketAddr>, SsrfDnsError> {
+    let ported = format!("{}:0", host);
+    let lookup = tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host(&ported)).await;
+    let iter = match lookup {
+        Ok(Ok(iter)) => iter,
+        Ok(Err(e)) => return Err(SsrfDnsError::DnsError(e.to_string())),
+        Err(_) => return Err(SsrfDnsError::Timeout),
+    };
+    let addrs: Vec<std::net::SocketAddr> = iter.collect();
+    if addrs.is_empty() {
+        return Err(SsrfDnsError::NoAddresses);
+    }
+    for addr in &addrs {
+        if is_blocked_ip(&addr.ip()) {
+            return Err(SsrfDnsError::Blocked {
+                host: host.to_string(),
+                ip: addr.ip(),
+            });
+        }
+    }
+    Ok(addrs)
 }
 
 /// Extract the host portion from a URL string.
