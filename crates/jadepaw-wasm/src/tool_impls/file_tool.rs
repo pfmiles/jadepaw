@@ -27,21 +27,15 @@ use crate::path::validate_sandbox_path;
 ///
 /// Reuses `validate_sandbox_path` from Phase 2 for path containment.
 /// Implements the `Tool` trait for agent-level dispatch.
-#[allow(dead_code)]
 pub struct FileReadTool {
     /// Sandbox root directory for path containment.
     sandbox_root: PathBuf,
-    /// Session identifier for logging/audit.
-    session_id: SessionId,
 }
 
 impl FileReadTool {
-    /// Create a new `FileReadTool` with the given sandbox root and session id.
-    pub fn new(sandbox_root: PathBuf, session_id: SessionId) -> Self {
-        Self {
-            sandbox_root,
-            session_id,
-        }
+    /// Create a new `FileReadTool` with the given sandbox root.
+    pub fn new(sandbox_root: PathBuf) -> Self {
+        Self { sandbox_root }
     }
 }
 
@@ -146,21 +140,15 @@ impl Tool for FileReadTool {
 ///
 /// Reuses `validate_sandbox_path` from Phase 2 for path containment.
 /// The file is created if it does not exist, truncated if it does.
-#[allow(dead_code)]
 pub struct FileWriteTool {
     /// Sandbox root directory for path containment.
     sandbox_root: PathBuf,
-    /// Session identifier for logging/audit.
-    session_id: SessionId,
 }
 
 impl FileWriteTool {
-    /// Create a new `FileWriteTool` with the given sandbox root and session id.
-    pub fn new(sandbox_root: PathBuf, session_id: SessionId) -> Self {
-        Self {
-            sandbox_root,
-            session_id,
-        }
+    /// Create a new `FileWriteTool` with the given sandbox root.
+    pub fn new(sandbox_root: PathBuf) -> Self {
+        Self { sandbox_root }
     }
 }
 
