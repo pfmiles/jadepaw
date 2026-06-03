@@ -15,11 +15,18 @@
 //!
 //! # Known risk (documented per T-04-04)
 //!
-//! DNS rebinding: an attacker who controls a whitelisted domain's DNS can race
-//! the 5s resolution timeout to change the IP between the domain whitelist check
-//! and the IP-layer check. This is an accepted risk for MVP — the domain
-//! whitelist is the primary defense, and the IP check is defense-in-depth to
-//! catch misconfigurations and simple attacks.
+//! **TOCTOU DNS rebinding:** The SSRF IP check calls `tokio::net::lookup_host` to
+//! resolve the hostname, validates all returned IPs, but does NOT pin the resolved
+//! addresses to the subsequent reqwest connection. reqwest performs its own
+//! independent DNS resolution internally, creating a TOCTOU window where a DNS
+//! rebinding attacker can return public IPs during the SSRF check and private IPs
+//! during reqwest's resolution. This is an accepted risk for MVP:
+//!
+//! - The domain whitelist (`can_access_domain`) is the primary defense.
+//! - DNS rebinding requires the attacker to control a whitelisted domain's DNS.
+//! - The IP layer check is defense-in-depth to catch misconfigurations.
+//! - Full fix: use `reqwest::ClientBuilder::dns_resolver()` with a custom resolver
+//!   that pins the pre-validated addresses (tracked in TODO at resolve_and_check_ssrf).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
