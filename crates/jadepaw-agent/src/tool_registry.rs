@@ -220,6 +220,7 @@ fn extract_host_from_tool_args(args: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use jadepaw_core::SessionId;
     use serde_json::json;
 
     /// A test tool that echoes its args.
