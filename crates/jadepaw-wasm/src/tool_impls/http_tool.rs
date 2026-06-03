@@ -391,21 +391,20 @@ impl Tool for HttpRequestTool {
         let (body_str, truncated) = {
             use reqwest::Result as ReqwestResult;
             let mut buf = Vec::with_capacity(MAX_RESPONSE_BODY_SIZE);
-            let mut total: usize = 0;
+            let mut truncated = false;
             loop {
                 let chunk: ReqwestResult<Option<bytes::Bytes>> = response.chunk().await;
                 match chunk {
                     Ok(Some(bytes)) => {
-                        total += bytes.len();
-                        if buf.len() < MAX_RESPONSE_BODY_SIZE {
+                        if buf.len() + bytes.len() > MAX_RESPONSE_BODY_SIZE {
                             let space = MAX_RESPONSE_BODY_SIZE - buf.len();
-                            buf.extend_from_slice(&bytes[..bytes.len().min(space)]);
-                        }
-                        // If we've exceeded the cap, drain remaining chunks to free the connection
-                        if total > MAX_RESPONSE_BODY_SIZE {
+                            buf.extend_from_slice(&bytes[..space]);
+                            truncated = true;
+                            // Drain remaining chunks to free the connection
                             while let Ok(Some(_)) = response.chunk().await {}
                             break;
                         }
+                        buf.extend_from_slice(&bytes);
                     }
                     Ok(None) => break, // body complete
                     Err(e) => {
@@ -422,13 +421,12 @@ impl Tool for HttpRequestTool {
                 }
             }
             let body_str = String::from_utf8_lossy(&buf).to_string();
-            if total > MAX_RESPONSE_BODY_SIZE {
+            if truncated {
                 (
                     format!(
-                        "{}...\n[TRUNCATED: response body exceeded 1MB limit. {} bytes shown of {} total]",
+                        "{}...\n[TRUNCATED: response body exceeded 1MB limit. {} bytes shown]",
                         body_str,
                         MAX_RESPONSE_BODY_SIZE,
-                        total
                     ),
                     true,
                 )
