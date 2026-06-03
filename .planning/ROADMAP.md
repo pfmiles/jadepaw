@@ -107,12 +107,12 @@ Plans:
   3. Tools are registered through an MCP-compatible interface — a tool implemented for Claude Code should be usable by jadepaw with minimal adaptation
   4. A tool call that fails (e.g., file not found, HTTP 500) is reported back to the agent with structured error information, and the agent can adapt its next action accordingly
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 **Wave 1** *(types + registry — no dependencies)*
 
-- [ ] 04-01-PLAN.md — Tool abstraction layer: Tool trait, ToolResult, ToolDefinition in jadepaw-core; ToolRegistry with capability-gated dispatch in jadepaw-agent; is_error on ReActStep::Observation; http_request on HostFunctions
+- [x] 04-01-PLAN.md — Tool abstraction layer: Tool trait, ToolResult, ToolDefinition in jadepaw-core; ToolRegistry with capability-gated dispatch in jadepaw-agent; is_error on ReActStep::Observation; http_request on HostFunctions
 
 **Wave 2** *(tool impls — blocked on Wave 1 types)*
 
@@ -210,7 +210,7 @@ Plans:
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
-| 4. Tool System | 0/3 | Planned | — |
+| 4. Tool System | 1/3 | In Progress|  |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
 | 7. Web Chat UI | 0/? | Not started | — |
