@@ -2,7 +2,7 @@
 phase: 04-tool-system
 reviewed: 2026-06-03T00:00:00Z
 depth: standard
-files_reviewed: 20
+files_reviewed: 21
 files_reviewed_list:
   - Cargo.lock
   - crates/jadepaw-agent/Cargo.toml
@@ -20,16 +20,17 @@ files_reviewed_list:
   - crates/jadepaw-core/tests/agent_types.rs
   - crates/jadepaw-core/tests/host_functions.rs
   - crates/jadepaw-wasm/Cargo.toml
+  - crates/jadepaw-wasm/src/host/mod.rs
   - crates/jadepaw-wasm/src/host/network.rs
   - crates/jadepaw-wasm/src/lib.rs
   - crates/jadepaw-wasm/src/tool_impls/file_tool.rs
   - crates/jadepaw-wasm/src/tool_impls/http_tool.rs
   - crates/jadepaw-wasm/src/tool_impls/mod.rs
 findings:
-  critical: 3
-  warning: 6
-  info: 4
-  total: 13
+  critical: 0
+  warning: 3
+  info: 3
+  total: 6
 status: issues_found
 ---
 
@@ -37,49 +38,39 @@ status: issues_found
 
 **Reviewed:** 2026-06-03T00:00:00Z
 **Depth:** standard
-**Files Reviewed:** 20
+**Files Reviewed:** 21
 **Status:** issues_found
 
 ## Summary
 
-Phase 04 introduces the Tool abstraction layer spanning three crates: `jadepaw-core` (Tool trait + ToolResult + ToolDefinition), `jadepaw-agent` (ToolRegistry + ReAct loop tool dispatch), and `jadepaw-wasm` (FileReadTool, FileWriteTool, HttpRequestTool + Wasm host function network support).
+This is an adversarial re-review of Phase 04 (tool-system), which introduces the Tool abstraction layer spanning three crates: `jadepaw-core` (Tool trait, ToolResult, ToolDefinition), `jadepaw-agent` (ToolRegistry, ReAct loop tool dispatch, LLM parsing with balanced parens), and `jadepaw-wasm` (FileReadTool, FileWriteTool, HttpRequestTool, Wasm host function network support with SSRF protections).
 
-The implementation is structurally sound with clear separation between the Tool trait (agent-level) and HostFunctions trait (Wasm-level). The ReAct loop integration correctly dispatches through ToolRegistry with capability gating at the tool level. However, **three critical security gaps** were found:
+The original review identified three critical, six warning, and four info-level findings. All three critical issues (CR-01 domain capability bypass, CR-02/CR-03 unbounded HTTP body reads) and four of the six warnings (WR-02 header injection, WR-03 wall-clock elapsed, WR-05 parser parens, WR-06 trait limitation documented) have been addressed. The fixes are present in the current code and look correct.
 
-1. The domain whitelist (`can_network_to`) is not enforced in the `HttpRequestTool::call()` path -- the Tool trait signature cannot access session capabilities
-2. Both HTTP implementations (tool path and host function path) read unlimited response bodies into memory before truncation or discard, creating DoS vectors
-3. `http_request_host_fn` reads full response bodies but discards them with no actual size cap enforcement
+This re-review confirms no new critical bugs or security vulnerabilities. Three warnings remain that represent code quality and maintainability concerns rather than correctness issues: fragile hardcoded tool-name coupling in the registry (WR-01), duplicated URL host extraction logic (WR-02), and redundant DNS resolution in the HTTP tool (WR-03). Three info-level items cover minor dead code, redundancy, and error handling style.
 
-Additionally, six warnings cover SSRF edge cases, error classification mismatches, header injection risks, and defense ordering. Four info items flag dead code, misleading log values, inconsistent truncation, and fragile comments.
+## Warnings
 
-## Critical Issues
+### WR-01: Hardcoded tool name "http_request" in domain capability check creates fragile coupling
 
-### CR-01: Domain capability check (can_access_domain) completely bypassed in HttpRequestTool::call()
+**File:** `crates/jadepaw-agent/src/tool_registry.rs:159`
+**Issue:** The domain capability check for HTTP requests is gated on a string equality comparison `name == "http_request"`. This couples the ToolRegistry to a specific tool name string. If `HttpRequestTool::name()` is ever refactored to return a different value (e.g., `"http"` or `"fetch"`), the domain check silently stops applying — the compiler cannot detect this coupling. Similarly, if a second network-capable tool is registered (e.g., `WebSocketTool`), the check would need to be duplicated for the new tool name.
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:216-377`
-**Issue:** The `HttpRequestTool::call()` method validates the URL scheme and extracts the hostname (line 247-250), then performs an SSRF IP-layer check via `resolve_and_check_ssrf()` (lines 253-256), but **never calls `can_access_domain()`** against the session's `can_network_to` capability list. Defense-in-depth Layer 1 (domain whitelist) is entirely skipped. The Wasm host function path (`http_request_host_fn` in `network.rs:103-112`) correctly enforces this check, but the `HttpRequestTool` (called through `ToolRegistry`) bypasses it.
-
-Note: The module doc comment at line 9 of `http_tool.rs` claims "Domain whitelist check (via `SessionState::can_access_domain`)" as defense layer 2, but this check is never actually performed.
-
-**Root cause:** The `Tool::call()` trait signature is `fn call(&self, args: Value, session_id: SessionId) -> ToolResult` -- it only receives a `SessionId`, not `SessionState` with capabilities. The `HttpRequestTool` has no way to access the `can_network_to` whitelist.
-
-**Impact:** If a session is granted `can_call_tool` for `HttpRequestTool` (tool-level allow), it can make HTTP requests to ANY domain, regardless of the `can_network_to` domain whitelist. The SSRF IP check (defense Layer 3) still blocks private/loopback IPs, but domain-based access control (e.g., limiting to `api.example.com`) is completely bypassed.
-
-**Fix:** Option (A) -- extend `Tool::call()` to accept session state, or Option (B) -- move the domain check into `ToolRegistry::call_tool()` where `SessionHandle` is already available. Option (B) avoids changing the trait:
-
+**Fix:** Use a shared constant for the tool name to ensure a single point of change:
 ```rust
-// In ToolRegistry::call_tool, before step 3 (dispatch to tool):
-if name == "http_request" {
-    // Extract host from args and check domain capability
+// In http_tool.rs:
+pub const TOOL_NAME: &str = "http_request";
+
+// In tool_registry.rs:
+use jadepaw_wasm::http_tool::TOOL_NAME as HTTP_REQUEST_TOOL_NAME;
+...
+if name == HTTP_REQUEST_TOOL_NAME {
+    let state = session.store().data();
     if let Some(host) = extract_host_from_tool_args(&args) {
-        let state = session.store().data();
         if !state.can_access_domain(&host) {
             return ToolResult::from_error(
                 "CAPABILITY_DENIED",
-                &format!(
-                    "Domain '{}' is not in the session's network capability whitelist.",
-                    host
-                ),
+                &format!("Domain '{}' is not in the session's network capability whitelist.", host),
                 false,
             );
         }
@@ -87,265 +78,147 @@ if name == "http_request" {
 }
 ```
 
+A more robust long-term fix would be a tool-level metadata field or capability type enum that the registry inspects, but the constant approach is sufficient for the MVP.
+
 ---
 
-### CR-02: http_request_host_fn reads unlimited response body into memory with no cap enforcement
+### WR-02: Duplicated URL host extraction functions in tool_registry.rs and network.rs
 
-**File:** `crates/jadepaw-wasm/src/host/network.rs:278-300`
+**File:** `crates/jadepaw-agent/src/tool_registry.rs:193-217` and `crates/jadepaw-wasm/src/host/network.rs:295-320`
+**Issue:** Two independent implementations of URL hostname extraction exist:
+- `extract_host_from_tool_args()` in `tool_registry.rs` — used for the registry-level domain capability check
+- `extract_host_from_url()` in `network.rs` — used by the `HttpRequestTool::validate_url()` method
 
-**Issue:** The Wasm host function `http_request_host_fn()` calls `response.bytes().await` (line 281) which reads the **entire** response body into memory regardless of size. `MAX_BODY_SIZE` is defined as 1MB (line 280) but is only used for an informational warning log (lines 291-296) -- the body is never actually truncated or capped. The function then returns only `status_code as i32` (line 300), discarding the body data entirely.
+Both implement identical string-processing logic (strip scheme at `://`, strip path at `/`/`?`/`#`, strip port at `:`), but they differ in implementation style: `tool_registry.rs` uses `.or_else()` chaining while `network.rs` uses `if let` / `else if` chains. The logic is functionally equivalent for normal URLs, but any future refinement to handle edge cases (percent-encoded hosts, IPv6 bracket notation, userinfo components) would need to be applied in two places, risking divergence.
 
-**Impact:** This is a DoS vector: an attacker who tricks a guest module into requesting a URL serving multi-gigabyte content can exhaust the host process memory, taking down all other sessions sharing the wasmtime process. The `MAX_BODY_SIZE` constant and the warning comment ("Truncate if over limit") indicate truncation was intended but never implemented.
-
-**Fix:** Stream the response body with a bounded reader that stops at MAX_BODY_SIZE. At minimum, use `tokio::io::AsyncReadExt::take()` to cap the read:
-
+**Fix:** Extract the canonical implementation to `jadepaw-core` (both `jadepaw-agent` and `jadepaw-wasm` already depend on it), then use it from both call sites:
 ```rust
-use tokio::io::AsyncReadExt;
-
-// Replace response.bytes().await with bounded read:
-let mut buf = Vec::new();
-let mut body_stream = response.bytes_stream();
-use futures::StreamExt;
-let mut total: usize = 0;
-while let Some(chunk) = body_stream.next().await {
-    match chunk {
-        Ok(bytes) => {
-            if total + bytes.len() > MAX_BODY_SIZE {
-                buf.extend_from_slice(&bytes[..MAX_BODY_SIZE - total]);
-                total = MAX_BODY_SIZE;
-                // Drain remaining chunks to free connection
-                while body_stream.next().await.is_some() {}
-                break;
-            }
-            buf.extend_from_slice(&bytes);
-            total += bytes.len();
-        }
-        Err(e) => { warn!(...); return -1; }
+// In jadepaw-core/src/tool.rs
+pub fn extract_host_from_url(url: &str) -> &str {
+    let after_scheme = if let Some(idx) = url.find("://") {
+        &url[idx + 3..]
+    } else {
+        url
+    };
+    let host_and_port = if let Some(idx) = after_scheme.find('/') {
+        &after_scheme[..idx]
+    } else if let Some(idx) = after_scheme.find('?') {
+        &after_scheme[..idx]
+    } else if let Some(idx) = after_scheme.find('#') {
+        &after_scheme[..idx]
+    } else {
+        after_scheme
+    };
+    if let Some(idx) = host_and_port.find(':') {
+        &host_and_port[..idx]
+    } else {
+        host_and_port
     }
 }
 ```
 
----
-
-### CR-03: HttpRequestTool::call() reads full response body before truncation
-
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:321-347`
-
-**Issue:** Same fundamental problem as CR-02 but in the `Tool` trait path. `response.text().await` (line 321) reads the **entire** response body into a `String` before any truncation check. The size check (line 336: `body_bytes.len() > MAX_RESPONSE_BODY_SIZE`) only happens AFTER the full body is already in memory. If a server returns 500MB of text, the host process allocates 500MB before truncating the result to 1MB.
-
-**Impact:** DoS risk through the agent dispatch path. Unlike CR-02 which affects the Wasm FFI path, this affects direct Tool invocation through `ToolRegistry::call_tool()`.
-
-**Fix:** Read the body with a bounded buffer. Replace `response.text().await` with `response.chunk().await` in a loop to stream chunks up to `MAX_RESPONSE_BODY_SIZE + 1`, then detect truncation:
-
-```rust
-let mut body_buf = Vec::with_capacity(MAX_RESPONSE_BODY_SIZE);
-let mut total: usize = 0;
-let mut stream = response.chunk();
-while let Some(chunk) = stream.next().await {
-    match chunk {
-        Ok(bytes) => {
-            if total + bytes.len() <= MAX_RESPONSE_BODY_SIZE {
-                body_buf.extend_from_slice(&bytes);
-            }
-            total += bytes.len();
-        }
-        Err(e) => { ... }
-    }
-}
-let truncated = total > MAX_RESPONSE_BODY_SIZE;
-let body_str = String::from_utf8_lossy(&body_buf).to_string();
-```
+Delete both the `extract_host_from_tool_args()` helper in `tool_registry.rs` and update `extract_host_from_url()` in `network.rs` to re-export from `jadepaw_core::tool::extract_host_from_url`.
 
 ---
 
-## Warnings
+### WR-03: HttpRequestTool performs redundant DNS resolution — once for SSRF check, once for reqwest
 
-### WR-01: SSRF IP check races with actual request -- resolved IPs discarded
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:258-263`
+**Issue:** The `call()` method calls `resolve_and_check_ssrf(&host)` (line 258) which resolves the hostname and validates all IPs against `is_blocked_ip()`. The resolved addresses are then discarded (`let _ = &addrs;` at line 263), and the actual HTTP request at line 316 goes through `reqwest`, which performs its own independent DNS resolution. This means every request triggers two DNS lookups, doubling the DNS-related latency (worst case: 2 x 5s timeout = 10s). The module-level documentation acknowledges the TOCTOU security window as accepted MVP risk, but does not mention the latency cost.
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:253-256`
-
-**Issue:** `resolve_and_check_ssrf()` resolves the hostname and validates all IPs, but the result is bound as `let _addrs = ...` (line 253, note the underscore prefix) and never used. The actual HTTP request at line 276 goes through `reqwest`, which performs its own independent DNS resolution. This creates a TOCTOU window: between the SSRF check's DNS resolution and `reqwest`'s DNS resolution, a DNS rebinding attack could change the resolved IP from public to private.
-
-The code acknowledges this risk (module doc lines 18-22), but the architectural gap between DNS-check-time and request-send-time means the SSRF check is advisory for non-cached DNS responses.
-
-**Fix:** Pin DNS resolution by passing checked addresses to reqwest:
-
+**Fix:** For the MVP, add a comment noting the performance implication:
 ```rust
+// TODO(perf): SSRF IP check resolves DNS independently of reqwest, doubling DNS latency.
+// Future optimization: pin resolved IPs to the reqwest connection to avoid re-resolution.
 let addrs = resolve_and_check_ssrf(&host).await?;
-// Pin DNS to checked addresses
-let request = self.client.request(method, &url_str);
-// Use reqwest::ClientBuilder::resolve() to pin or add checked host IP mapping
+let _ = &addrs;
 ```
 
----
-
-### WR-02: HttpRequestTool sets user-supplied headers without validation
-
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:259-283`
-
-**Issue:** User-supplied headers from the `headers` JSON field are directly set on the reqwest request via `request.header(key, value)` (line 283). While `reqwest` blocks setting certain restricted headers (e.g., `Host`), the tool should explicitly deny dangerous header names and sanitize header values containing `\r\n` sequences that could enable HTTP request smuggling.
-
-**Fix:** Add a blocklist and value validator:
-
-```rust
-const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
-    "host", "content-length", "transfer-encoding",
-    "proxy-authorization", "connection",
-];
-for (key, value) in &headers {
-    let key_lower = key.to_lowercase();
-    if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
-        continue;
-    }
-    if value.contains('\r') || value.contains('\n') {
-        continue;
-    }
-    request = request.header(key.as_str(), value.as_str());
-}
-```
-
----
-
-### WR-03: WallClockTimeout elapsed_ms reports the timeout limit, not the actual elapsed time
-
-**File:** `crates/jadepaw-agent/src/guard.rs:106-114`
-
-**Issue:** The wall-clock timeout branch constructs `AgentTerminationReason::WallClockTimeout` with `elapsed_ms: ms` where `ms` is `config.wall_clock_timeout.as_millis() as u64`. This sets `elapsed_ms` to the configured timeout value (e.g., 300,000ms) rather than the actual elapsed time. The termination reason will read "timed out after 300s" but the actual elapsed time could be slightly different (especially under system load).
-
-**Fix:** Record a start `Instant` and compute actual elapsed:
-
-```rust
-let start = tokio::time::Instant::now();
-tokio::select! {
-    result = agent_loop() => { ... }
-    _ = tokio::time::sleep(config.wall_clock_timeout) => {
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        Err(JadepawError::agent_terminated(
-            AgentTerminationReason::WallClockTimeout {
-                elapsed_ms,
-                max_ms: config.wall_clock_timeout.as_millis() as u64,
-            },
-        ))
-    }
-}
-```
-
----
-
-### WR-04: Unbounded LLM message history accumulation across turns
-
-**File:** `crates/jadepaw-agent/src/loop.rs:246-262`
-
-**Issue:** The `messages` vector grows unboundedly. Each `Act` branch appends an observation result + assistant response (lines 246, 254). Each `ContinueThinking` branch appends the assistant response (line 263). At 20 iterations (default `max_iterations`), the history contains up to 20 assistant responses + 20 observation messages + 1 system + 1 user = 42 messages, easily exceeding LLM context windows with meaningful content. This wastes tokens on earlier turns that may no longer be relevant. While the LLM API would also enforce context limits, the agent should manage its own context budget.
-
-**Fix:** Document the limitation and add a TODO for future message windowing. In the short term, consider a sliding window of the last N messages or implement a summarization strategy.
-
----
-
-### WR-05: Command injection risk via unsanitized parser output from llm.rs
-
-**File:** `crates/jadepaw-agent/src/llm.rs:239-262`
-
-**Issue:** `parse_next_action()` uses `find('(')` at line 240 and `rfind(')')` at line 243 to extract tool arguments from the ACTION directive. If the action string contains unbalanced parentheses or text after the final `)`, the parser silently produces malformed args. For example:
-- `ACTION: tool_name(x=1) extra text` would parse args as `"x=1"` (correct -- rfind gives the last `)`)
-- Wait: `rfind(')')` would find position 18, giving `x=1`. So that's correct for trailing text. But:
-- `ACTION: tool_name(x=func(y=1))` would parse args as `x=func(y=1` (WRONG -- the closing `)` at position 21, not the second one at position 21. Actually `rfind(')')` would find the one at position 21, which is the correct closing paren. Let me re-trace: the string after `ACTION:` prefix is ` tool_name(x=func(y=1))`. `find('(')` finds `(` at position 12 (after "tool_name"). `rfind(')')` from position 13+ finds `)` at position 23 (the last char). `args_and_close[..23]` = `x=func(y=1)`. This is correct for this example.)
-
-The real issue is when `rfind(')')` finds a `)` from a trailing fragment: `ACTION: tool_name(x=1)) extra` would parse args as `x=1)` (includes the first `)` from extra). This is a correctness-for-input-validity issue -- the parser doesn't validate that the parentheses are balanced.
-
-**Fix:** Implement balanced parenthesis matching instead of `rfind(')')`:
-
-```rust
-if let Some(paren_pos) = action_str.find('(') {
-    let tool = action_str[..paren_pos].trim().to_string();
-    let inner = &action_str[paren_pos + 1..];
-    // Find the matching closing paren with depth tracking
-    let mut depth = 1;
-    let mut close_pos = None;
-    for (i, ch) in inner.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => { depth -= 1; if depth == 0 { close_pos = Some(i); break; } }
-            _ => {}
-        }
-    }
-    if let Some(pos) = close_pos {
-        let args = inner[..pos].trim().to_string();
-        // ...
-    }
-}
-```
-
----
-
-### WR-06: Tool trait signature prevents per-operation capability enforcement
-
-**File:** `crates/jadepaw-core/src/tool.rs:143-163`
-
-**Issue:** The `Tool::call()` signature receives only `session_id: SessionId`, not `SessionState` or `InstanceCapabilities`. As demonstrated by CR-01, this means tool implementations that need capability information (domain whitelist, path patterns) cannot access it. The `FileReadTool` and `FileWriteTool` work around this by hardcoding `sandbox_root` in their constructor, but domain-based and path-pattern-based capability enforcement are structurally impossible through the `Tool` trait.
-
-**Fix:** Extend the trait to accept session capabilities:
-
-```rust
-async fn call(&self, args: serde_json::Value, session_id: SessionId, capabilities: &InstanceCapabilities) -> ToolResult;
-```
-
-This allows `HttpRequestTool` to call `capabilities.can_network_to.contains(...)` and `FileReadTool` to validate paths against `capabilities.can_read_files` without hardcoding the sandbox root.
+Longer term, use `reqwest::ClientBuilder::dns_resolver()` or a custom `reqwest::dns::Resolve` implementation to inject the checked addresses directly into reqwest's connection pool.
 
 ---
 
 ## Info
 
-### IN-01: Dead code -- session_id field in FileReadTool and FileWriteTool
+### IN-01: Dead `session_id` field in FileReadTool and FileWriteTool structs
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/file_tool.rs:30-31, 149-150`
+**File:** `crates/jadepaw-wasm/src/tool_impls/file_tool.rs:34-35, 153-154`
+**Issue:** Both `FileReadTool` and `FileWriteTool` contain a `session_id: SessionId` field that is stored in `::new()` but never read by any method. The `Tool::call()` method receives `_session_id: SessionId` as a parameter, which shadows the struct field. The struct field provides no audit logging, authorization, or any other function — it is pure dead data. Additionally, both structs retain `#[allow(dead_code)]` annotations that are no longer needed (the structs are exported via `pub use` in `lib.rs:42-43`).
 
-**Issue:** Both `FileReadTool` and `FileWriteTool` are annotated with `#[allow(dead_code)]` and contain a `session_id: SessionId` field that is stored in the constructor but never read. The `call()` methods accept a separate `_session_id: SessionId` parameter and ignore the struct field. The field provides no audit, logging, or authorization value.
-
-**Fix:** Remove the `session_id` field from both structs and their constructors, or add `tracing::info!` logs referencing it. Remove the `#[allow(dead_code)]` annotations.
-
----
-
-### IN-02: LlmDirective::Finish branch references specific line number in code comment
-
-**File:** `crates/jadepaw-agent/src/loop.rs:177-181`
-
-**Issue:** The comment at lines 177-181 explains why `LlmDirective::Finish { thought: _ }` discards the thought field, and references "line 159" (the Thought push at the top of the turn). Hard-coded line numbers in comments become stale when code is refactored.
-
-**Fix:** Replace with an invariant description:
-
-```
-// thought field intentionally unused — the complete LLM response was
-// already captured as a ReActStep::Thought at the beginning of this
-// turn iteration, before the parse_next_action() call.
-LlmDirective::Finish { thought: _, answer } => {
-```
-
----
-
-### IN-03: http_request_host_fn reads body for cleanup but never truncates
-
-**File:** `crates/jadepaw-wasm/src/host/network.rs:289-300`
-
-**Issue:** The `http_request_host_fn` reads the full response body via `response.bytes().await` (line 281), checks against `MAX_BODY_SIZE` with only a warning (lines 291-296), then returns only `status_code as i32` (line 300). The body is read for "connection cleanup" but the function neither truncates it to the cap nor returns it to the caller. The comment "Truncate if over limit" and the `MAX_BODY_SIZE` constant look like work-in-progress indicators -- the truncation was planned but not completed.
-
-**Fix:** See CR-02 for the full fix. If the body is truly not needed, avoid reading it entirely:
+**Fix:** Remove the `session_id` field from both structs and their constructors. If audit logging is planned for a future phase, add it then. Remove the `#[allow(dead_code)]` annotations.
 
 ```rust
-// Just drop the response to free connection resources without reading body
-drop(response);
-return status_code as i32;
+// FileReadTool — remove session_id:
+pub struct FileReadTool {
+    sandbox_root: PathBuf,
+}
+pub fn new(sandbox_root: PathBuf) -> Self {
+    Self { sandbox_root }
+}
 ```
 
 ---
 
-### IN-04: `#[cfg(test)]` gated import of SessionId is misleading
+### IN-02: Redundant name_index lookup in ToolRegistry::call_tool
 
-**File:** `crates/jadepaw-agent/src/tool_registry.rs:28-29`
+**File:** `crates/jadepaw-agent/src/tool_registry.rs:107-124`
+**Issue:** `call_tool()` performs two separate `name_index` lookups for the same tool name:
+1. Line 107-108: `self.get_by_name(name)` — looks up `name_index`, then `tools`
+2. Line 124-136: `self.name_index.get(name)` — looks up `name_index` again for the tool_id
 
-**Issue:** `use jadepaw_core::SessionId;` is gated with `#[cfg(test)]` but the `Tool` trait's `call()` method (used in production) has `session_id: SessionId` in its signature. The test-only import works because `SessionId` is transitively available through other imports (`jadepaw_core::Tool`), but the attribute pattern suggests the type isn't used in production when it actually is.
+The second lookup is redundant since the first one already validated that the tool exists. The code correctly handles the edge case where the second lookup returns `None` (by returning `INTERNAL_ERROR`), but this is dead error-handling — if the tool was found by `get_by_name`, it must exist in `name_index` by construction (no `deregister` method exists).
 
-**Fix:** Remove the `#[cfg(test)]` gate from the import and keep it unconditionally, or remove the import entirely and add a direct import in the `mod tests` block.
+**Fix:** Look up the tool_id first, then use it to fetch the tool, eliminating the second lookup:
+```rust
+let tool_id = match self.name_index.get(name) {
+    Some(id) => *id,
+    None => {
+        let available: Vec<String> =
+            self.name_index.iter().map(|e| e.key().clone()).collect();
+        return ToolResult::from_error(
+            "UNKNOWN_TOOL",
+            &format!("Unknown tool: '{}'. Available tools: {:?}", name, available),
+            false,
+        );
+    }
+};
+let tool = match self.tools.get(&tool_id) {
+    Some(entry) => Arc::clone(entry.value()),
+    None => {
+        return ToolResult::from_error(
+            "INTERNAL_ERROR",
+            &format!("Tool '{}' found in name_index but not in tools", name),
+            false,
+        );
+    }
+};
+```
+
+---
+
+### IN-03: `build_http_client()` uses `.expect()` in shared library code
+
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:44-50`
+**Issue:** The `build_http_client()` function uses `.expect("reqwest Client builder should not fail with valid config")` on the `reqwest::Client::builder().build()` result. While the no-argument builder configuration will not fail under normal conditions, `.expect()` (panics) in library code means a user application crashes if an unexpected environment issue (e.g., TLS backend initialization failure, missing system CA certificates) causes the builder to fail. This is called once during `HttpRequestTool` construction, not per-request, so the practical risk is minimal, but panicking in library code is a code quality anti-pattern.
+
+**Fix:** Either propagate the error or document the justification:
+```rust
+fn build_http_client() -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(redirect::Policy::limited(1))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build HTTP client")
+}
+```
+
+Alternatively, if the panic is intentional (fail-fast during initialization), add a comment explaining why:
+```rust
+// Panics acceptable: called once at tool construction time during application
+// startup. A failure here indicates a fundamentally broken runtime (missing
+// TLS backend or system certificates), and panicking is the correct response
+// to prevent silent failures.
+```
 
 ---
 
