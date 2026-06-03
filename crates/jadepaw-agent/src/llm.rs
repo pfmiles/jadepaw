@@ -236,12 +236,31 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
         }
         (_, Some(act)) => {
             let action_str = after_thought[act + "ACTION:".len()..].trim();
-            // Parse tool_name(args) format
+            // Parse tool_name(args) format with balanced parenthesis tracking
+            // (WR-05). Using depth counting instead of rfind(')') correctly
+            // handles nested parentheses like tool_name(x=func(y=1)) and
+            // rejects malformed input like tool_name(x=1)).
             if let Some(paren_pos) = action_str.find('(') {
                 let tool = action_str[..paren_pos].trim().to_string();
-                let args_and_close = &action_str[paren_pos + 1..];
-                if let Some(close_pos) = args_and_close.rfind(')') {
-                    let args = args_and_close[..close_pos].trim().to_string();
+                let inner = &action_str[paren_pos + 1..];
+                // Find the matching closing paren with depth tracking
+                let mut depth = 1usize;
+                let mut close_pos = None;
+                for (i, ch) in inner.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close_pos = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(pos) = close_pos {
+                    let args = inner[..pos].trim().to_string();
                     if !tool.is_empty() {
                         return LlmDirective::Act {
                             thought,
