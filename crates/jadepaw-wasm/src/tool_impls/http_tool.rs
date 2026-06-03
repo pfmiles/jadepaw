@@ -267,6 +267,11 @@ impl Tool for HttpRequestTool {
             Err(e) => return e,
         };
         // Silence unused warning: addrs validated but not pinned to request.
+        //
+        // TODO(perf): SSRF IP check resolves DNS independently of reqwest, doubling DNS
+        // latency. Future optimization: use reqwest::ClientBuilder::dns_resolver() or
+        // a custom reqwest::dns::Resolve implementation to inject the checked addresses
+        // directly into reqwest's connection pool, avoiding re-resolution.
         let _ = &addrs;
 
         // 4. Extract optional headers
