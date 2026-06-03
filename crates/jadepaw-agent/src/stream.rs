@@ -43,7 +43,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 /// |-------------------|----------------|-------------|
 /// | `Thought`         | `thought`      | Plain text  |
 /// | `Action`          | `action`       | JSON `{"tool": "...", "args": "..."}` |
-/// | `Observation`     | `observation`  | Plain text  |
+/// | `Observation`     | `observation`  | JSON `{"result": "...", "is_error": bool}` |
 /// | `Error`           | `error`        | JSON `{"message": "...", "turn": N}` |
 /// | `Finished`        | `done`         | JSON `{"answer": "..."}` |
 pub fn create_sse_channel(
@@ -75,8 +75,24 @@ pub fn create_sse_channel(
                 });
                 Event::default().event("action").data(payload)
             }
-            ReActStep::Observation { result, .. } => {
-                Event::default().event("observation").data(result)
+            ReActStep::Observation { result, is_error } => {
+                let payload = serde_json::to_string(&serde_json::json!({
+                    "result": result,
+                    "is_error": is_error,
+                }))
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        error = %e,
+                        "failed to serialize observation SSE event data"
+                    );
+                    serde_json::json!({
+                        "result": result,
+                        "is_error": is_error,
+                        "serialization_error": e.to_string(),
+                    })
+                    .to_string()
+                });
+                Event::default().event("observation").data(payload)
             }
             ReActStep::Error { message, turn } => {
                 let payload = serde_json::to_string(&serde_json::json!({
