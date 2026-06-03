@@ -876,22 +876,22 @@ LlmDirective::Act { thought: _, tool, args } => {
 
 **If this table has entries:** Three assumptions identified, all LOW risk. None require user confirmation before execution — they are standard library guarantees or ecosystem precedents.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **ToolRegistry lifecycle: per-agent-run or global?**
    - What we know: CONTEXT.md doesn't specify. The hash map is thread-safe (DashMap), so it could be either shared across sessions or per-session.
    - What's unclear: Whether the same ToolRegistry instance is shared across all concurrent agent sessions or created fresh per `run_agent()` call.
-   - Recommendation: Make `ToolRegistry` an `Arc<ToolRegistry>` shared across sessions. The DashMap is already concurrent-read-optimized, and tools are stateless (all state is in SessionHandle). This avoids per-session registration overhead and enables future hot-reload of tools.
+   - **RESOLVED:** Make `ToolRegistry` an `Arc<ToolRegistry>` shared across sessions. The DashMap is already concurrent-read-optimized, and tools are stateless (all state is in SessionHandle). This avoids per-session registration overhead and enables future hot-reload of tools.
 
 2. **Should the HTTP tool handle non-200 status codes as errors?**
    - What we know: CONTEXT.md D-04 says HTTP 500 is a tool error. Success criteria #4 says HTTP 500 is reported as a structured error.
    - What's unclear: Whether 4xx errors (e.g., 404, 403) should be `ToolResult::Error` or `ToolResult::Ok` with the status code in data.
-   - Recommendation: 4xx = `ToolResult::Ok` with status code in data (the tool succeeded at making the request; the response is valid data). 5xx = `ToolResult::Error` with retryable=true. This matches MCP semantics where `isError` signals tool-level failures, not application-level HTTP semantics.
+   - **RESOLVED:** 4xx = `ToolResult::Ok` with status code in data (the tool succeeded at making the request; the response is valid data). 5xx = `ToolResult::Error` with retryable=true. This matches MCP semantics where `isError` signals tool-level failures, not application-level HTTP semantics.
 
 3. **How should the REACT_SYSTEM_PROMPT be augmented with tool descriptions?**
    - What we know: The LLM needs to know available tools to produce well-formed ACTION directives. The LLM parsing in `parse_next_action()` currently handles `tool_name(args)` format.
    - What's unclear: Whether tool descriptions should be in the system prompt (static), injected as a user message per turn, or added as context.
-   - Recommendation: Inject tool list into the system prompt at `build_initial_messages()` time. This is the standard MCP pattern — tools are discovered once and available for the session. The `run_agent()` function receives the `ToolRegistry`, calls `list_tools()`, and builds the augmented system prompt before the first LLM call.
+   - **RESOLVED:** Inject tool list into the system prompt at `build_initial_messages()` time. This is the standard MCP pattern — tools are discovered once and available for the session. The `run_agent()` function receives the `ToolRegistry`, calls `list_tools()`, and builds the augmented system prompt before the first LLM call.
 
 ## Environment Availability
 
