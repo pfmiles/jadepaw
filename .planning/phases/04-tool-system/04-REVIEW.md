@@ -1,22 +1,24 @@
 ---
 phase: 04-tool-system
-reviewed: 2026-06-03T22:10:00Z
+reviewed: 2026-06-04T00:00:00Z
 depth: standard
-files_reviewed: 22
+files_reviewed: 24
 files_reviewed_list:
-  - Cargo.lock
   - crates/jadepaw-agent/Cargo.toml
   - crates/jadepaw-agent/src/lib.rs
   - crates/jadepaw-agent/src/llm.rs
   - crates/jadepaw-agent/src/loop.rs
   - crates/jadepaw-agent/src/stream.rs
   - crates/jadepaw-agent/src/tool_registry.rs
+  - crates/jadepaw-agent/src/guard.rs
   - crates/jadepaw-agent/tests/agent_loop.rs
   - crates/jadepaw-agent/tests/sse_streaming.rs
   - crates/jadepaw-core/src/agent_types.rs
   - crates/jadepaw-core/src/host_functions.rs
   - crates/jadepaw-core/src/lib.rs
   - crates/jadepaw-core/src/tool.rs
+  - crates/jadepaw-core/src/capabilities.rs
+  - crates/jadepaw-core/src/error.rs
   - crates/jadepaw-core/tests/agent_types.rs
   - crates/jadepaw-core/tests/host_functions.rs
   - crates/jadepaw-wasm/Cargo.toml
@@ -28,137 +30,120 @@ files_reviewed_list:
   - crates/jadepaw-wasm/src/tool_impls/mod.rs
 findings:
   critical: 2
-  warning: 3
-  info: 2
-  total: 7
+  warning: 4
+  info: 3
+  total: 9
 status: issues_found
 ---
 
-# Phase 04: Code Review Report (Second Re-review)
+# Phase 04: Code Review Report (Third Re-review)
 
-**Reviewed:** 2026-06-03T22:10:00Z
+**Reviewed:** 2026-06-04
 **Depth:** standard
-**Files Reviewed:** 22
+**Files Reviewed:** 24
 **Status:** issues_found
 
 ## Summary
 
-This is the third adversarial review of Phase 04 (tool-system). Previous review findings (CR-01 userinfo bypass, CR-02 validate_url bypass, WR-01 IPv6 bracket handling, WR-02 silent header drops, IN-01 host_functions test gap) have been correctly fixed in commits `ebd9a27`, `3fbb2fa`, `195b83a`. This re-review targets the current state of the code after those fixes.
+This is the fourth adversarial review of Phase 04 (tool-system). Previous review rounds addressed CR-01/CR-02 (SSRF bypasses: userinfo stripping, IPv4-mapped IPv6, RFC 6598 shared address space), WR-01 (IPv6 bracket notation), WR-02 (silent header drops, TOCTOU documentation), WR-03 (SSRF logic duplication resolved into shared function). These fixes are verified correct in the current code.
 
-Two new critical SSRF bypass vectors were discovered that the existing SSRF IP check does not block. Three warnings address logic edge cases in the LLM parser, missing IP range coverage, and structural duplication. Two info items cover test gaps.
+This re-review identifies two new behavioral correctness issues (BLOCKER tier), four warnings covering logic edge cases and error handling miscategorization, and three info items on dead code, structural duplication, and magic numbers.
 
 ## Critical Issues
 
-### CR-01: IPv4-mapped IPv6 address bypasses SSRF IP check
+### CR-01: Silent loss of FINAL ANSWER when ACTION parsing fails in a response containing both directives
 
-**File:** `crates/jadepaw-wasm/src/host/network.rs:305-322`
-**Issue:** The `is_blocked_ip` function checks IPv6 addresses for loopback (`::1`), unique local (`fc00::/7`), link-local (`fe80::/10`), multicast (`ff00::/8`), and unspecified (`::`). However, it does NOT check for IPv4-mapped IPv6 addresses (prefix `::ffff:0:0/96`).
+**File:** `crates/jadepaw-agent/src/llm.rs:229-296`
+**Issue:** In `parse_next_action`, when both `ACTION:` and `FINAL ANSWER:` appear in the LLM response with ACTION textually before FINAL ANSWER (`act < fa`), the match arm `(_, Some(act))` (line 237) handles the ACTION. If ACTION parsing fails -- empty tool name, unbalanced parentheses, or `ACTION: (args)` with whitespace before the paren -- the code falls through to the implicit `(None, None)` arm and returns `ContinueThinking`. The subsequent `FINAL ANSWER:` directive is never examined.
 
-An attacker can construct a URL using raw IPv6 bracket notation `http://[::ffff:127.0.0.1]/admin` or `http://[::ffff:10.0.0.1]/secret`. The extraction flow:
+The reverse case works correctly: when `FINAL ANSWER` appears first (`fa < act`) and its answer is empty, the code falls through to the `(_, Some(act))` arm and the ACTION is properly parsed. The asymmetry is the bug.
 
-1. `extract_host_from_url("http://[::ffff:127.0.0.1]/admin")` returns `::ffff:127.0.0.1` (WR-01 IPv6 bracket fix handles this correctly)
-2. `is_blocked_ip(IpAddr::V6(...))` is called
-3. None of the IPv6 check methods match: `is_loopback()` only covers `::1`, not `::ffff:127.0.0.1`; `is_unique_local()` only covers `fc00::/7`; etc.
-4. The IP passes through SSRF validation
-5. reqwest connects to `http://[::ffff:127.0.0.1]/admin`, which on many systems resolves to the IPv4 loopback `127.0.0.1`
+**Reproduction:**
+```
+THOUGHT: Let me try something...
+ACTION:   (query="Paris")    # tool name empty due to whitespace before paren
+FINAL ANSWER: The weather is sunny.
+```
+Expected: `Finish` with answer.
+Actual: `ContinueThinking` -- agent restarts the loop, never producing a final answer.
 
-This also applies to IPv4-mapped private addresses like `::ffff:192.168.1.1` and `::ffff:10.0.0.1`.
+**Impact:** When the LLM produces a malformed action followed by a valid final answer, the agent silently loops until it hits the iteration limit or the LLM happens to produce a parseable response. The user sees no answer and a large execution trace of wasted LLM calls.
 
-**Impact:** All internal IPv4 addresses can be reached by wrapping them in IPv4-mapped IPv6 notation. The domain whitelist in the registry is the primary defense, but if the whitelist contains `*` (allow all domains) or the IP corresponds to a whitelisted domain's DNS record (e.g., an internal IP behind a corporate DNS), the SSRF IP-layer defense-in-depth is bypassed.
-
-**Fix:** In `is_blocked_ip`, add a check for IPv4-mapped IPv6 addresses before the IPv6-specific checks. Use `Ipv6Addr::to_ipv4()` (stabilized in Rust 1.75) to extract the embedded IPv4 address and re-check it:
-
+**Fix:**
 ```rust
-pub(crate) fn is_blocked_ip(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_multicast()
-                || v4.is_broadcast()
-                || v4.is_unspecified()
-                || v4.is_shared()  // CR-02: 100.64.0.0/10
-        }
-        IpAddr::V6(v6) => {
-            // CR-01: convert IPv4-mapped IPv6 to IPv4 before checks
-            if let Some(v4) = v6.to_ipv4() {
-                return v4.is_private()
-                    || v4.is_loopback()
-                    || v4.is_link_local()
-                    || v4.is_multicast()
-                    || v4.is_broadcast()
-                    || v4.is_unspecified()
-                    || v4.is_shared();
+(_, Some(act)) => {
+    let mut parsed_action = false;
+    let action_str = after_thought[act + "ACTION:".len()..].trim();
+    // ... existing paren-depth-parsing logic (lines 243-271) ...
+    if let Some(paren_pos) = action_str.find('(') {
+        let tool = action_str[..paren_pos].trim().to_string();
+        let inner = &action_str[paren_pos + 1..];
+        let mut depth = 1usize;
+        let mut close_pos = None;
+        for (i, ch) in inner.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => { depth -= 1; if depth == 0 { close_pos = Some(i); break; } }
+                _ => {}
             }
-            v6.is_loopback()
-                || v6.is_unique_local()
-                || v6.is_unicast_link_local()
-                || v6.is_multicast()
-                || v6.is_unspecified()
+        }
+        if let Some(pos) = close_pos {
+            let args = inner[..pos].trim().to_string();
+            if !tool.is_empty() {
+                parsed_action = true;
+                return LlmDirective::Act { thought, tool, args };
+            }
         }
     }
-}
-```
-
-Also add tests:
-
-```rust
-#[test]
-fn is_blocked_ip_v4_mapped_ipv6_loopback() {
-    // ::ffff:127.0.0.1 should be blocked
-    let addr: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
-    assert!(is_blocked_ip(&addr));
-}
-
-#[test]
-fn is_blocked_ip_v4_mapped_ipv6_private() {
-    // ::ffff:192.168.1.1 should be blocked
-    let addr: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
-    assert!(is_blocked_ip(&addr));
-}
-
-#[test]
-fn is_blocked_ip_v4_mapped_ipv6_public() {
-    // ::ffff:8.8.8.8 should NOT be blocked
-    let addr: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
-    assert!(!is_blocked_ip(&addr));
+    if !parsed_action {
+        // ... existing no-paren fallback logic (lines 273-287) ...
+        let tool = action_str.trim().to_string();
+        if !tool.is_empty() && !tool.starts_with('(') {
+            parsed_action = true;
+            return LlmDirective::Act { thought, tool, args: String::new() };
+        }
+    }
+    // CR-01 fix: if ACTION parsing failed and a FINAL ANSWER is known
+    // to follow (act_pos < fa_pos), try to extract it before giving up.
+    if !parsed_action {
+        if let Some(fa) = fa_pos {
+            let answer = after_thought[fa + "FINAL ANSWER:".len()..]
+                .trim().to_string();
+            if !answer.is_empty() {
+                return LlmDirective::Finish { thought, answer };
+            }
+        }
+    }
+    // Truly no actionable directive: continue thinking.
 }
 ```
 
 ---
 
-### CR-02: RFC 6598 shared address space (`100.64.0.0/10`) not blocked in SSRF IP check
+### CR-02: `reqwest::Client` construction panics at agent startup via `.expect()` on an infallible-looking builder
 
-**File:** `crates/jadepaw-wasm/src/host/network.rs:306-322`
-**Issue:** The `is_blocked_ip` function for IPv4 checks `is_private()`, `is_loopback()`, `is_link_local()`, `is_multicast()`, `is_broadcast()`, and `is_unspecified()`, but does NOT check `is_shared()`. The `is_shared()` method (Rust 1.63+) covers RFC 6598 Carrier-Grade NAT address space `100.64.0.0/10`.
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:58-64`
+**Issue:** The function `build_http_client()` calls `.expect("reqwest Client builder should not fail with valid config")` on `reqwest::Client::builder()...build()`. This function is called from `HttpRequestTool::new()` (line 129), which is invoked at agent startup. If the system's TLS backend fails to initialize -- possible on restricted containers, broken OpenSSL installations, or systems where `/dev/urandom` is unavailable -- the entire agent process panics instead of returning a graceful error.
 
-The shared address space is typically used by ISPs for CGNAT and cloud environments for internal networking (AWS uses it for VPC endpoints in some regions, GCP uses it for certain internal services). A host may have internal infrastructure accessible via these addresses.
+Unlike the `unreachable!()` on line 242 of `network.rs` (which is guarded by a validated method enum), this `.expect()` is on an **I/O-dependent operation** that can fail in production environments. In a multi-tenant system serving hundreds of agents, a single broken node's TLS initialization crashes the whole process.
 
-**Impact:** An attacker with a whitelisted domain that resolves (or is coerced to resolve) to an address in `100.64.0.0/10` could reach the host's CGNAT/internal network. Combined with IPv4-mapped IPv6 (CR-01), this widens the SSRF attack surface.
-
-**Fix:** Add `v4.is_shared()` to the IPv4 check chain in `is_blocked_ip`:
-
+**Fix:** Make `new()` fallible:
 ```rust
-IpAddr::V4(v4) => {
-    v4.is_private()
-        || v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_multicast()
-        || v4.is_broadcast()
-        || v4.is_unspecified()
-        || v4.is_shared()  // 100.64.0.0/10
+pub fn new() -> Result<Self, anyhow::Error> {
+    Ok(Self {
+        client: reqwest::Client::builder()
+            .redirect(redirect::Policy::limited(1))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .context("failed to initialize HTTP client for HttpRequestTool")?,
+        allowed_methods: vec![...],
+    })
 }
-```
 
-Add test:
-
-```rust
-#[test]
-fn is_blocked_ip_shared_address_space() {
-    // RFC 6598 CGNAT range should be blocked
-    assert!(is_blocked_ip(&"100.64.0.1".parse::<IpAddr>().unwrap()));
-    assert!(is_blocked_ip(&"100.127.255.254".parse::<IpAddr>().unwrap()));
+impl Default for HttpRequestTool {
+    fn default() -> Self {
+        Self::new().expect("HttpRequestTool::default() requires working TLS")
+    }
 }
 ```
 
@@ -166,108 +151,132 @@ fn is_blocked_ip_shared_address_space() {
 
 ## Warnings
 
-### WR-01: `parse_next_action` produces malformed tool name when `ACTION:` is immediately followed by whitespace and `(`
+### WR-01: `unwrap_or_default()` silently discards tool input_schema serialization failures
 
-**File:** `crates/jadepaw-agent/src/llm.rs:237-281`
-**Issue:** When the LLM produces `ACTION: (args)` (with a space between `ACTION:` and `(`), the parser behavior is incorrect:
-
-1. Line 238: `action_str = "(args)".trim()` = `"(args)"`
-2. Line 243: `action_str.find('(')` = `Some(0)` (found at position 0)
-3. Line 244: `tool = action_str[..0].trim()` = `""` (empty string)
-4. `tool.is_empty()` is true, so we skip to the fallback at lines 273-281
-5. Line 274: `tool = "(args)"` (the trimmed action_str, which has no tool name)
-6. Line 276: `!(args).is_empty()` is true → returns `Act { tool: "(args)", args: "" }`
-
-The tool name `"(args)"` is obviously invalid and will result in an `UNKNOWN_TOOL` error from `ToolRegistry`, but the error message will be confusing ("Unknown tool: '(args)'"). The correct behavior should be to recognize that no tool name precedes the opening parenthesis and fall through to `ContinueThinking`.
-
-**Fix:** Check that the tool name (text before `(`) is non-empty before attempting paren matching. If the `(` is at position 0 of `action_str`, skip to the `ContinueThinking` fallback:
-
+**File:** `crates/jadepaw-agent/src/llm.rs:123`
+**Issue:** In `build_system_prompt_with_tools()`, the `input_schema` field is serialized with:
 ```rust
-if let Some(paren_pos) = action_str.find('(') {
-    let tool = action_str[..paren_pos].trim().to_string();
-    if tool.is_empty() {
-        // Parenthesis found but no tool name before it.
-        // Fall through to ContinueThinking (WR-01).
-    } else {
-        // ... existing paren matching logic ...
+serde_json::to_string(&t.input_schema).unwrap_or_default()
+```
+If `input_schema` contains a `serde_json::Value` that is non-serializable (e.g., `f64::NAN` or `f64::INFINITY`), `serde_json::to_string` returns an `Err`, and `unwrap_or_default()` silently yields `""`. The LLM prompt then contains `Parameters: ` with no schema, degrading tool call quality. The LLM will attempt to call the tool without knowing its parameter format.
+
+**Fix:**
+```rust
+serde_json::to_string(&t.input_schema).unwrap_or_else(|e| {
+    tracing::warn!(tool = %t.name, error = %e,
+        "failed to serialize tool input_schema for prompt injection");
+    format!("\"<serialization error: {}>\"", e)
+})
+```
+
+---
+
+### WR-02: `unwrap_or_default()` silently discards malformed guest headers in host function
+
+**File:** `crates/jadepaw-wasm/src/host/network.rs:180`
+**Issue:** In `http_request_host_fn`, the header JSON is deserialized with:
+```rust
+serde_json::from_str(s).unwrap_or_default()
+```
+If the guest module sends headers as valid UTF-8 that is **not** valid JSON (e.g., a comma-separated key=value string, or raw text), the headers are silently set to an empty `HashMap`. The HTTP request proceeds **without any headers**, potentially changing its behavior compared to the guest's intent. In a security-sensitive context (e.g., a guest-provided `Authorization` header intended for a specific API), this silent stripping is especially dangerous.
+
+**Fix:** Return `-1` on invalid header JSON, so the guest is notified of the malformed input:
+```rust
+match serde_json::from_str(s) {
+    Ok(h) => h,
+    Err(e) => {
+        warn!(%session_id, "http_request: invalid JSON in headers: {}", e);
+        return -1;
     }
 }
 ```
 
-Alternatively, modify the fallback at line 273 to check if the string starts with `(`:
+---
 
+### WR-03: `unwrap_or(reqwest::Method::GET)` silently masks internal logic errors in HTTP tool
+
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:301`
+**Issue:** The request dispatch uses:
 ```rust
-// Fallback: treat entire string as tool name with empty args
-let tool = action_str.trim().to_string();
-if !tool.is_empty() && !tool.starts_with('(') {
-    return LlmDirective::Act { thought, tool, args: String::new() };
-}
+method.parse::<reqwest::Method>().unwrap_or(reqwest::Method::GET)
 ```
+The method string was already validated against `allowed_methods` on line 236 -- all entries in `allowed_methods` match valid `reqwest::Method` variants. Any parse failure here represents an **internal logic error** (e.g., the validated string was corrupted between the check and the parse). Using `unwrap_or` silently defaults to GET, turning a POST-with-body into a GET-without-body. This masks the bug and produces incorrect HTTP behavior.
+
+**Fix:** Use an explicit match that makes the invariant visible:
+```rust
+let reqwest_method = match method.as_str() {
+    "GET" => reqwest::Method::GET,
+    "POST" => reqwest::Method::POST,
+    "PUT" => reqwest::Method::PUT,
+    "PATCH" => reqwest::Method::PATCH,
+    "DELETE" => reqwest::Method::DELETE,
+    _ => unreachable!("method validated against allowed_methods"),
+};
+```
+This eliminates the parse step entirely and makes the match exhaustive at compile time.
 
 ---
 
-### WR-02: `resolve_and_check_ssrf` performs separate DNS resolution from reqwest, but results are not pinned — TOCTOU window exists
+### WR-04: Fuel reset failure miscategorised as `LoopErrorKind::LlmFailure`
 
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:259-275`
-**Issue:** The SSRF IP check at line 265 calls `resolve_and_check_ssrf(&host)`, which independently resolves the hostname via `tokio::net::lookup_host`. The validated addresses are stored in `addrs` but never used for the actual reqwest request. At line 275, `let _ = &addrs;` is followed by a TODO comment documenting the double-DNS performance cost.
+**File:** `crates/jadepaw-agent/src/loop.rs:141-149`
+**Issue:** The session store fuel reset error is mapped to `LoopErrorKind::LlmFailure`:
+```rust
+session.store_mut().set_fuel(1_000_000).map_err(|e| {
+    loop_error(LoopErrorKind::LlmFailure {
+        turn,
+        source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
+    })
+})?;
+```
+`LlmFailure` semantically implies an LLM API call failure (as used on lines 160-165 for actual LLM errors). A store-access failure is a different category -- it is an infrastructure error on the Wasm runtime side, not the LLM side. In `guard.rs`, both map to `InfrastructureError` (which is coincidentally correct), but the error classification is misleading for observability. Operators investigating LLM failure alerts would see store-access errors mixed in.
 
-The actual reqwest request at lines 295-297 uses `url_str` directly, causing reqwest to perform its own DNS resolution internally. The TOCTOU window between the SSRF DNS resolution and reqwest's DNS resolution means:
-
-1. A DNS rebinding attack could return a public IP during the SSRF check (line 265) and a private/internal IP during reqwest's resolution (line 338)
-2. The SSRF IP check runs once, but the connection target is determined by reqwest's resolution
-
-**Impact:** DNS rebinding window is documented as an accepted risk per the module docs (lines 67-68), and this is a known limitation. However, the severity is elevated because the SSRF check is effectively an advisory check that doesn't constrain the actual connection target.
-
-**Fix:** The code already has a TODO at lines 271-274 documenting the proper fix: use `reqwest::ClientBuilder::dns_resolver()` with a custom resolver that uses the pre-validated addresses. In the short term, ensure the risk is documented in the security threat model. This is flagged as a WARNING rather than CRITICAL because (a) DNS rebinding requires the attacker to control a whitelisted domain's DNS, and (b) the domain whitelist is the primary defense.
-
----
-
-### WR-03: SSRF IP check logic duplicated between `host/network.rs` and `tool_impls/http_tool.rs`
-
-**File:** `crates/jadepaw-wasm/src/host/network.rs:198-235` and `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:69-109`
-**Issue:** Both `http_request_host_fn` in `network.rs` and `resolve_and_check_ssrf` in `http_tool.rs` contain nearly identical DNS resolution + IP-checking logic (5-second timeout, `lookup_host`, iterate IPs, call `is_blocked_ip`). The error handling differs slightly: the host function returns `-1` for all failures, while the tool function returns structured `ToolResult::Error` variants with different error codes.
-
-**Impact:** Any future change to SSRF IP check logic (e.g., adding `is_shared()` coverage from CR-02, or fixing CR-01's IPv4-mapped IPv6) must be applied in two places. This is a maintenance hazard. The host function path (`network.rs`) already has the domain whitelist check (line 104), the scheme validation (lines 140-150), and the SSRF IP check all inline, creating substantial code duplication with `HttpRequestTool`.
-
-**Fix:** Extract the shared SSRF resolution logic into a common function, e.g., in `network.rs`, and have both call sites use it. The `resolve_and_check_ssrf` in `http_tool.rs` already has better error types; consider making it pub(crate) and having the host function also call it (translating the structured errors to the `-1` return convention).
+**Fix:** Either introduce a dedicated `LoopErrorKind::StoreFailure { turn, source }` variant, or rename `LlmFailure` to something broader like `InfrastructureFailure`. Minimally, ensure the error message clearly distinguishes the failure origin (the `.context()` on line 144 does this with `"failed to set fuel on session store"`).
 
 ---
 
 ## Info
 
-### IN-01: `domain_matches` does not validate that pattern format is well-formed
+### IN-01: `session_id` field stored but never read in `FileReadTool` and `FileWriteTool`
 
-**File:** `crates/jadepaw-wasm/src/capability/mod.rs:104-124`
-**Issue:** The `domain_matches` function accepts any string as a pattern without validation. Patterns like `*.*.example.com` (multiple wildcards) or `*` (bare star) behave unexpectedly. `*.*.example.com` would strip prefix `*.` to get `*.example.com`, then check `domain.ends_with("*.example.com")` which would never match any domain (since the `*` is a literal character in the suffix). The `strip_prefix("*.")` at line 116 only strips the first `*.`.
+**File:** `crates/jadepaw-wasm/src/tool_impls/file_tool.rs:31-36, 149-155`
+**Issue:** Both `FileReadTool` and `FileWriteTool` store `session_id: SessionId` as a field, but the `call()` method uses only the `_session_id: SessionId` parameter from the `Tool` trait signature. The stored `self.session_id` is never read. The `#[allow(dead_code)]` attribute on both structs suppresses the compiler warning. This suggests the field was intended for structured logging/audit but the logging was never implemented.
 
-**Impact:** Administrators might configure `*.*.example.com` expecting it to match two levels of subdomains, but it would silently match nothing. The bare `*` pattern (line 106) matches anything, which could be unintentionally broad.
-
-**Fix:** Add validation at pattern registration time (in `DomainPattern::new()` or at registry startup) that rejects patterns containing internal `*` characters that are not at the beginning. Accept only `*`, `exact.domain.com`, `*.example.com` (single wildcard subdomain) formats. Alternatively, add a tracing warning for unrecognized patterns.
+**Fix:** Either use `self.session_id` inside `call()` with `tracing::info!(%self.session_id, ...)` for audit logging, or remove the field from both structs and their constructors.
 
 ---
 
-### IN-02: `host_functions.rs` test does not exercise `http_request` trait method
+### IN-02: Duplicate `extract_host_from_url` tests across two crates
 
-**File:** `crates/jadepaw-core/tests/host_functions.rs:60-89`
-**Issue:** The `test_host_functions_trait_result_types` test verifies the `Result` types for `log_message`, `file_read`, and `file_write`, but does not test `http_request`. The `TestHostFn` struct implements `http_request` (lines 37-48), but the test only exercises three of the four methods.
+**File:** `crates/jadepaw-core/src/tool.rs:242-311` and `crates/jadepaw-wasm/src/host/network.rs:404-425`
+**Issue:** Identical test cases for `extract_host_from_url` exist in both `jadepaw-core` (canonical implementation) and `jadepaw-wasm` (thin delegation wrapper). The wasm-side tests re-verify behavior that the core tests already cover. This duplicates maintenance burden: any new test case must be added to both locations.
 
-**Impact:** Any future signature change to `http_request` that breaks the return type tuple `(u16, HashMap<String, String>, Vec<u8>)` would not be caught by this type-level test, potentially causing compilation failures only in downstream crates that use the `HostFunctions` trait.
+**Fix:** Remove the `extract_host_*` test block from `network.rs` (lines 404-425), or add a comment documenting them as smoke tests for the delegation wrapper. The wasm crate's test focus should be `is_blocked_ip` and `resolve_and_check_ssrf_addr`.
 
-**Fix:** Add an `http_request` invocation to the test (as previously noted in prior review IN-01, still applicable):
+---
 
+### IN-03: Per-turn fuel budget value `1_000_000` is a magic number
+
+**File:** `crates/jadepaw-agent/src/loop.rs:143`
+**Issue:** The Wasm fuel reset uses the inline literal `1_000_000`:
 ```rust
-let result: Result<(u16, std::collections::HashMap<String, String>, Vec<u8>)> =
-    rt.block_on(host.http_request(
-        "GET".into(),
-        "https://example.com".into(),
-        std::collections::HashMap::new(),
-        None,
-    ));
-assert!(result.is_err());
+session.store_mut().set_fuel(1_000_000)
+```
+The design document D-10 Pitfall 3 specifies this value, but it is not extracted as a named constant. If the fuel budget needs tuning per tenant or per agent complexity tier, the literal must be found and replaced across the codebase.
+
+**Fix:**
+```rust
+/// Per-turn Wasm fuel budget in fuel units (D-10 Pitfall 3).
+/// Each ReAct iteration resets the guest's fuel to this value to prevent
+/// infinite loops and excessive compute consumption.
+const PER_TURN_FUEL_BUDGET: u64 = 1_000_000;
+
+// ...
+session.store_mut().set_fuel(PER_TURN_FUEL_BUDGET)
 ```
 
 ---
 
-_Reviewed: 2026-06-03T22:10:00Z_
+_Reviewed: 2026-06-04_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
