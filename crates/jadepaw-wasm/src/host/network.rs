@@ -290,33 +290,9 @@ pub fn http_request_host_fn(
 
 /// Extract the host portion from a URL string.
 ///
-/// Handles both `http://example.com/path` and simple `example.com` forms.
-/// Returns the domain without port or path.
+/// Delegates to the canonical implementation in `jadepaw_core::tool`.
 pub(crate) fn extract_host_from_url(url: &str) -> &str {
-    // Strip scheme
-    let after_scheme = if let Some(idx) = url.find("://") {
-        &url[idx + 3..]
-    } else {
-        url
-    };
-
-    // Strip path, query, fragment
-    let host_and_port = if let Some(idx) = after_scheme.find('/') {
-        &after_scheme[..idx]
-    } else if let Some(idx) = after_scheme.find('?') {
-        &after_scheme[..idx]
-    } else if let Some(idx) = after_scheme.find('#') {
-        &after_scheme[..idx]
-    } else {
-        after_scheme
-    };
-
-    // Strip port
-    if let Some(idx) = host_and_port.find(':') {
-        &host_and_port[..idx]
-    } else {
-        host_and_port
-    }
+    jadepaw_core::extract_host_from_url(url)
 }
 
 /// Check if an IP address is blocked for outbound SSRF.

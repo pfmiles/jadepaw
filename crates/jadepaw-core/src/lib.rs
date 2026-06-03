@@ -32,5 +32,5 @@ pub use capabilities::{DomainPattern, InstanceCapabilities, PathPattern};
 pub use error::{JadepawError, Result};
 pub use guest_exports::{GuestExports, NextAction, ToolChoice, ToolDef};
 pub use host_functions::HostFunctions;
-pub use tool::{Tool, ToolDefinition, ToolResult};
+pub use tool::{extract_host_from_url, Tool, ToolDefinition, ToolResult};
 pub use types::{SessionId, TenantId, ToolId};

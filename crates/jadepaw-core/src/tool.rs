@@ -24,6 +24,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::SessionId;
 
+/// Extract the host portion from a URL string.
+///
+/// Handles both `http://example.com/path` and simple `example.com` forms.
+/// Returns the domain without port, path, query, or fragment.
+///
+/// Used by both the agent-level `ToolRegistry` domain capability check and
+/// the Wasm-level `HttpRequestTool` URL validation. A single canonical
+/// implementation avoids duplicated string-processing logic.
+pub fn extract_host_from_url(url: &str) -> &str {
+    // Strip scheme
+    let after_scheme = if let Some(idx) = url.find("://") {
+        &url[idx + 3..]
+    } else {
+        url
+    };
+
+    // Strip path, query, fragment
+    let host_and_port = if let Some(idx) = after_scheme.find('/') {
+        &after_scheme[..idx]
+    } else if let Some(idx) = after_scheme.find('?') {
+        &after_scheme[..idx]
+    } else if let Some(idx) = after_scheme.find('#') {
+        &after_scheme[..idx]
+    } else {
+        after_scheme
+    };
+
+    // Strip port
+    if let Some(idx) = host_and_port.find(':') {
+        &host_and_port[..idx]
+    } else {
+        host_and_port
+    }
+}
+
 /// Structured result from a tool invocation.
 ///
 /// Maps to MCP's two-tier error model:
