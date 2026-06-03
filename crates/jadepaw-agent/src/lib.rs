@@ -18,12 +18,13 @@
 //! - HTTP/WS transport or session affinity (see jadepaw-gateway)
 //! - Core data types (see jadepaw-core)
 //! - Skill format or compilation (see jadepaw-skill)
-//! - Tool registry with MCP-compatible protocol adapter (Phase 4)
+//! - Tool registry with MCP-compatible protocol adapter (now in `tool_registry` module)
 
 pub mod guard;
 pub mod llm;
 pub mod r#loop;
 pub mod stream;
+pub mod tool_registry;
 
 use std::convert::Infallible;
 use std::env::temp_dir;
@@ -149,3 +150,4 @@ pub use llm::{
 };
 pub use r#loop::react_loop;
 pub use stream::create_sse_channel;
+pub use tool_registry::ToolRegistry;

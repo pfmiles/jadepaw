@@ -222,6 +222,7 @@ pub async fn react_loop(
                         "Tool '{}' called with args '{}'. Full tool execution is coming in Phase 4.",
                         tool, args
                     ),
+                    is_error: false,
                 };
                 trace.push(observation.clone());
                 if tx.send(observation).await.is_err() {

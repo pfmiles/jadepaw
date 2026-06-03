@@ -50,6 +50,7 @@ async fn test_create_sse_channel_all_variants() {
     .unwrap();
     tx.send(ReActStep::Observation {
         result: "found results".to_string(),
+        is_error: false,
     })
     .await
     .unwrap();
@@ -164,6 +165,7 @@ async fn test_sse_injection_sanitization() {
 
     tx.send(ReActStep::Observation {
         result: malicious_content.to_string(),
+        is_error: false,
     })
     .await
     .unwrap();

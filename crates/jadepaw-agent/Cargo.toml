@@ -13,10 +13,12 @@ tokio = { workspace = true }
 tokio-stream = "0.1"
 futures = "0.3"
 serde_json = { workspace = true }
+dashmap = { workspace = true }
 anyhow = "1.0"
 tracing = "0.1"
 
 [dev-dependencies]
+async-trait = "0.1"
 wat = "1"
 tempfile = "3"
 

@@ -75,7 +75,7 @@ pub fn create_sse_channel(
                 });
                 Event::default().event("action").data(payload)
             }
-            ReActStep::Observation { result } => {
+            ReActStep::Observation { result, .. } => {
                 Event::default().event("observation").data(result)
             }
             ReActStep::Error { message, turn } => {
@@ -171,6 +171,7 @@ mod tests {
         .unwrap();
         tx.send(ReActStep::Observation {
             result: "found 10 results".to_string(),
+            is_error: false,
         })
         .await
         .unwrap();
@@ -307,6 +308,7 @@ mod tests {
         // raw SSE format if not handled)
         tx.send(ReActStep::Observation {
             result: "line1\n\nline2".to_string(),
+            is_error: false,
         })
         .await
         .unwrap();
