@@ -22,7 +22,7 @@
 //! catch misconfigurations and simple attacks.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;

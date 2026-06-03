@@ -12,6 +12,7 @@
 //! - SessionState for `Store<T>` data — per-session identity and limits
 //! - Epoch ticker background thread for cooperative yielding
 //! - WASI context setup and preopens directory management (Phase 2+)
+//! - Tool trait implementations: FileReadTool, FileWriteTool, HttpRequestTool (Phase 4+)
 //!
 //! ## What does NOT live here
 //!
@@ -29,6 +30,7 @@ pub mod linker;
 pub mod path;
 pub mod pool;
 pub mod session;
+pub mod tool_impls;
 
 pub use engine::EngineFactory;
 pub use epoch::{start_epoch_ticker, EpochTickerGuard};
@@ -37,3 +39,5 @@ pub use linker::{create_linker, register_host_functions};
 pub use path::{normalize_path, validate_sandbox_path};
 pub use pool::{InstancePool, PoolConfig, SessionHandle};
 pub use session::{SessionLimits, SessionState};
+pub use tool_impls::file_tool::{FileReadTool, FileWriteTool};
+pub use tool_impls::http_tool::HttpRequestTool;

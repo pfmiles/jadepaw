@@ -1297,6 +1297,7 @@ name = "jadepaw-wasm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "dashmap",
  "jadepaw-core",

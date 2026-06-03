@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use jadepaw_core::{JadepawError, SessionId, Tool, ToolResult};
+use jadepaw_core::{SessionId, Tool, ToolResult};
 use serde_json::Value;
 
 use crate::path::validate_sandbox_path;
@@ -27,6 +27,7 @@ use crate::path::validate_sandbox_path;
 ///
 /// Reuses `validate_sandbox_path` from Phase 2 for path containment.
 /// Implements the `Tool` trait for agent-level dispatch.
+#[allow(dead_code)]
 pub struct FileReadTool {
     /// Sandbox root directory for path containment.
     sandbox_root: PathBuf,
@@ -68,7 +69,7 @@ impl Tool for FileReadTool {
         })
     }
 
-    async fn call(&self, args: Value, session_id: SessionId) -> ToolResult {
+    async fn call(&self, args: Value, _session_id: SessionId) -> ToolResult {
         // 1. Extract and validate path argument
         let path = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
@@ -129,7 +130,7 @@ impl Tool for FileReadTool {
             Ok(content) => ToolResult::Ok {
                 data: Value::String(content),
             },
-            Err(e) => ToolResult::Error {
+            Err(_e) => ToolResult::Error {
                 code: "INVALID_UTF8".to_string(),
                 message: format!(
                     "File at '{}' is not valid UTF-8 text. Only text files can be read this way.",
@@ -145,6 +146,7 @@ impl Tool for FileReadTool {
 ///
 /// Reuses `validate_sandbox_path` from Phase 2 for path containment.
 /// The file is created if it does not exist, truncated if it does.
+#[allow(dead_code)]
 pub struct FileWriteTool {
     /// Sandbox root directory for path containment.
     sandbox_root: PathBuf,
@@ -190,7 +192,7 @@ impl Tool for FileWriteTool {
         })
     }
 
-    async fn call(&self, args: Value, session_id: SessionId) -> ToolResult {
+    async fn call(&self, args: Value, _session_id: SessionId) -> ToolResult {
         // 1. Extract and validate path argument
         let path = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
