@@ -107,7 +107,7 @@ Plans:
   3. Tools are registered through an MCP-compatible interface — a tool implemented for Claude Code should be usable by jadepaw with minimal adaptation
   4. A tool call that fails (e.g., file not found, HTTP 500) is reported back to the agent with structured error information, and the agent can adapt its next action accordingly
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 **Wave 1** *(types + registry — no dependencies)*
@@ -116,7 +116,7 @@ Plans:
 
 **Wave 2** *(tool impls — blocked on Wave 1 types)*
 
-- [ ] 04-02-PLAN.md — Tool implementations: FileReadTool and FileWriteTool wrapping Wasm sandbox host fns; HttpRequestTool with reqwest HTTP client, SSRF IP-layer protection, 1MB body cap, 30s timeout; http_request_host_fn stub replaced with real HTTP
+- [x] 04-02-PLAN.md — Tool implementations: FileReadTool and FileWriteTool wrapping Wasm sandbox host fns; HttpRequestTool with reqwest HTTP client, SSRF IP-layer protection, 1MB body cap, 30s timeout; http_request_host_fn stub replaced with real HTTP
 
 **Wave 3** *(integration — blocked on Wave 1 registry + Wave 2 impls)*
 
@@ -210,7 +210,7 @@ Plans:
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
-| 4. Tool System | 1/3 | In Progress|  |
+| 4. Tool System | 2/3 | In Progress|  |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
 | 7. Web Chat UI | 0/? | Not started | — |
