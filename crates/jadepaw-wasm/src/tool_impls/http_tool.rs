@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use jadepaw_core::{SessionId, Tool, ToolResult};
 use reqwest::redirect;
@@ -55,12 +56,12 @@ const MAX_RESPONSE_BODY_SIZE: usize = 1_048_576;
 /// - `redirect::Policy::limited(1)` — at most 1 redirect (T-04-05)
 /// - `timeout(Duration::from_secs(30))` — 30s total request timeout (D-03a)
 /// - Uses rustls-tls (no OpenSSL dependency)
-fn build_http_client() -> reqwest::Client {
+fn build_http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(redirect::Policy::limited(1))
         .timeout(Duration::from_secs(30))
         .build()
-        .expect("reqwest Client builder should not fail with valid config")
+        .context("failed to initialize HTTP client for HttpRequestTool")
 }
 
 /// Resolve the hostname and check all resolved IPs for SSRF.
@@ -126,9 +127,13 @@ pub struct HttpRequestTool {
 
 impl HttpRequestTool {
     /// Create a new `HttpRequestTool` with D-03a defaults.
-    pub fn new() -> Self {
-        Self {
-            client: build_http_client(),
+    ///
+    /// Returns an error if the underlying HTTP client (reqwest) fails to
+    /// initialize, e.g., due to missing TLS support in restricted containers
+    /// (CR-02).
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            client: build_http_client()?,
             allowed_methods: vec![
                 "GET".to_string(),
                 "POST".to_string(),
@@ -136,7 +141,7 @@ impl HttpRequestTool {
                 "PATCH".to_string(),
                 "DELETE".to_string(),
             ],
-        }
+        })
     }
 
     /// Extract scheme from a URL string. Returns `None` if no `://` marker found.
@@ -182,7 +187,7 @@ impl HttpRequestTool {
 
 impl Default for HttpRequestTool {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("HttpRequestTool::default() requires working TLS")
     }
 }
 
