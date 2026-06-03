@@ -24,10 +24,6 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use jadepaw_core::{Tool, ToolDefinition, ToolId, ToolResult};
 
-// Imported for #[cfg(test)] use only; not used in non-test code.
-#[cfg(test)]
-use jadepaw_core::SessionId;
-
 /// Central registry for all tools available to the agent.
 ///
 /// Thread-safe via `DashMap`. Provides MCP-compatible `tools/list` and
@@ -155,6 +151,26 @@ impl ToolRegistry {
                     false,
                 );
             }
+
+            // CR-01: Per-operation domain capability check for http_request tool.
+            // HttpRequestTool::call() only has SessionId, not SessionState, so it
+            // cannot access the can_network_to whitelist. This check closes the
+            // gap by enforcing domain capability at the Registry level (D-01a).
+            if name == "http_request" {
+                if let Some(host) = extract_host_from_tool_args(&args) {
+                    if !state.can_access_domain(&host) {
+                        return ToolResult::from_error(
+                            "CAPABILITY_DENIED",
+                            &format!(
+                                "Domain '{}' is not in the session's network capability whitelist. \
+                                 The agent is only allowed to access domains listed in can_network_to.",
+                                host
+                            ),
+                            false,
+                        );
+                    }
+                }
+            }
         }
 
         // Step 3: Dispatch to tool
@@ -166,6 +182,37 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Extract the hostname from the "url" field of tool args JSON.
+///
+/// Used by `call_tool()` to perform domain capability checks for the
+/// `http_request` tool before dispatching to the tool implementation.
+/// Returns `None` if the args do not contain a "url" field with a string value.
+fn extract_host_from_tool_args(args: &serde_json::Value) -> Option<String> {
+    let url_str = args.get("url")?.as_str()?;
+
+    // Strip scheme
+    let after_scheme = if let Some(idx) = url_str.find("://") {
+        &url_str[idx + 3..]
+    } else {
+        url_str
+    };
+
+    // Strip path, query, fragment
+    let host_and_port = after_scheme
+        .find('/')
+        .or_else(|| after_scheme.find('?'))
+        .or_else(|| after_scheme.find('#'))
+        .map(|idx| &after_scheme[..idx])
+        .unwrap_or(after_scheme);
+
+    // Strip port
+    if let Some(idx) = host_and_port.find(':') {
+        Some(host_and_port[..idx].to_string())
+    } else {
+        Some(host_and_port.to_string())
     }
 }
 
