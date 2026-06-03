@@ -83,6 +83,14 @@ where
                                 },
                             )
                         }
+                        LoopErrorKind::StoreFailure { turn, source: _ } => {
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::InfrastructureError {
+                                    reason: e.to_string(),
+                                    turn: *turn,
+                                },
+                            )
+                        }
                         LoopErrorKind::ChannelClosed { turn } => {
                             JadepawError::agent_terminated(
                                 AgentTerminationReason::InfrastructureError {

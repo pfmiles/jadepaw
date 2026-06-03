@@ -50,6 +50,13 @@ pub(crate) enum LoopErrorKind {
         /// The underlying error.
         source: anyhow::Error,
     },
+    /// The Wasm session store failed (fuel reset, memory access, etc.).
+    StoreFailure {
+        /// The turn number on which the failure occurred.
+        turn: u32,
+        /// The underlying error.
+        source: anyhow::Error,
+    },
     /// The output SSE channel was closed (client disconnected).
     ChannelClosed {
         /// The turn number on which the channel was detected closed.
@@ -69,6 +76,9 @@ impl fmt::Display for LoopErrorKind {
             Self::LlmFailure { turn, source } => {
                 write!(f, "LLM call failed on turn {turn}: {source}")
             }
+            Self::StoreFailure { turn, source } => {
+                write!(f, "session store access failed on turn {turn}: {source}")
+            }
             Self::ChannelClosed { turn } => {
                 write!(f, "output channel closed on turn {turn}")
             }
@@ -79,7 +89,9 @@ impl fmt::Display for LoopErrorKind {
 impl std::error::Error for LoopErrorKind {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::LlmFailure { source, .. } => Some(source.as_ref()),
+            Self::LlmFailure { source, .. } | Self::StoreFailure { source, .. } => {
+                Some(source.as_ref())
+            }
             _ => None,
         }
     }
@@ -142,7 +154,7 @@ pub async fn react_loop(
             .store_mut()
             .set_fuel(1_000_000)
             .map_err(|e| {
-                loop_error(LoopErrorKind::LlmFailure {
+                loop_error(LoopErrorKind::StoreFailure {
                     turn,
                     source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
                 })
