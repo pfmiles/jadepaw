@@ -270,9 +270,15 @@ pub fn parse_next_action(response: &str) -> LlmDirective {
                     }
                 }
             }
-            // Fallback: treat entire string as tool name with empty args
+            // Fallback: treat entire string as tool name with empty args.
+            // WR-01: reject strings that start with '(' — e.g. "ACTION: (args)"
+            // where the LLM put whitespace between ACTION: and the opening paren.
+            // The paren-based parsing above already found `(` at position 0 and
+            // the tool name was empty, so falling through with "(args)" as the
+            // tool name would produce a confusing UNKNOWN_TOOL error. Instead,
+            // fall through to ContinueThinking so the LLM can correct itself.
             let tool = action_str.trim().to_string();
-            if !tool.is_empty() {
+            if !tool.is_empty() && !tool.starts_with('(') {
                 return LlmDirective::Act {
                     thought,
                     tool,
