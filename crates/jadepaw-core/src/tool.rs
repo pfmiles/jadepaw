@@ -61,8 +61,16 @@ pub fn extract_host_from_url(url: &str) -> &str {
         after_userinfo
     };
 
-    // Strip port
-    if let Some(idx) = host_and_port.find(':') {
+    // Strip port — handle IPv6 bracket notation [::1]:8080 (WR-01)
+    if host_and_port.starts_with('[') {
+        if let Some(idx) = host_and_port.find("]:") {
+            &host_and_port[1..idx]
+        } else if let Some(idx) = host_and_port.find(']') {
+            &host_and_port[1..idx]
+        } else {
+            host_and_port
+        }
+    } else if let Some(idx) = host_and_port.find(':') {
         &host_and_port[..idx]
     } else {
         host_and_port
@@ -275,4 +283,29 @@ mod tests {
         );
     }
 
+    /// WR-01: IPv6 bracket notation is handled correctly.
+    /// The port-stripping step must not break inside `[::1]`.
+    #[test]
+    fn extract_host_ipv6_with_port() {
+        assert_eq!(
+            extract_host_from_url("https://[2001:db8::1]:8080/path"),
+            "2001:db8::1"
+        );
     }
+
+    #[test]
+    fn extract_host_ipv6_no_port() {
+        assert_eq!(
+            extract_host_from_url("https://[::1]/path"),
+            "::1"
+        );
+    }
+
+    #[test]
+    fn extract_host_ipv6_bare() {
+        assert_eq!(
+            extract_host_from_url("https://[fe80::1]"),
+            "fe80::1"
+        );
+    }
+}
