@@ -109,6 +109,19 @@ Plans:
 
 **Plans:** 3 plans
 
+Plans:
+**Wave 1** *(types + registry — no dependencies)*
+
+- [ ] 04-01-PLAN.md — Tool abstraction layer: Tool trait, ToolResult, ToolDefinition in jadepaw-core; ToolRegistry with capability-gated dispatch in jadepaw-agent; is_error on ReActStep::Observation; http_request on HostFunctions
+
+**Wave 2** *(tool impls — blocked on Wave 1 types)*
+
+- [ ] 04-02-PLAN.md — Tool implementations: FileReadTool and FileWriteTool wrapping Wasm sandbox host fns; HttpRequestTool with reqwest HTTP client, SSRF IP-layer protection, 1MB body cap, 30s timeout; http_request_host_fn stub replaced with real HTTP
+
+**Wave 3** *(integration — blocked on Wave 1 registry + Wave 2 impls)*
+
+- [ ] 04-03-PLAN.md — ReAct loop integration: ToolRegistry dispatch replaces placeholder Observation; run_agent() accepts optional ToolRegistry; system prompt augmented with tool list; SSE observation events carry is_error
+
 ### Phase 5: Session Memory
 
 **Goal:** Conversations persist within a session with automatic context window management, and sessions can be paused, persisted, and resumed later.
@@ -197,7 +210,7 @@ Plans:
 | 1. Project Foundation | 2/2 | Complete   | 2026-05-28 |
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
-| 4. Tool System | 0/? | Not started | — |
+| 4. Tool System | 0/3 | Planned | — |
 | 5. Session Memory | 0/? | Not started | — |
 | 6. Skill System | 0/? | Not started | — |
 | 7. Web Chat UI | 0/? | Not started | — |
