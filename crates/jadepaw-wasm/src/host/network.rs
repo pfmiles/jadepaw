@@ -364,7 +364,11 @@ pub(crate) enum SsrfDnsError {
 /// - `Ok(Vec<SocketAddr>)` if all IPs are public.
 /// - `Err(SsrfDnsError)` with a specific variant on failure.
 pub(crate) async fn resolve_and_check_ssrf_addr(host: &str) -> Result<Vec<std::net::SocketAddr>, SsrfDnsError> {
-    let ported = format!("{}:0", host);
+    let ported = if host.contains(':') {
+        format!("[{}]:0", host)
+    } else {
+        format!("{}:0", host)
+    };
     let lookup = tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host(&ported)).await;
     let iter = match lookup {
         Ok(Ok(iter)) => iter,
