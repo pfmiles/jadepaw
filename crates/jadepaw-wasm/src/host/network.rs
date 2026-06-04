@@ -242,7 +242,25 @@ pub fn http_request_host_fn(
             _ => unreachable!("method already validated against ALLOWED_METHODS"),
         };
 
-        let mut request = client.request(reqwest_method, url);
+        // WR-04: Strip userinfo from URL before passing to reqwest.
+        // The raw URL may contain user:password@ credentials embedded by
+        // the guest Wasm code. While the guest controls its own request
+        // content, passing userinfo in the URL leaks credentials to
+        // intermediate proxies (URL logging) and is a bad practice.
+        // Strip silently rather than rejecting — the guest can still
+        // send credentials via the Authorization header explicitly.
+        let request_url = if let Some(scheme_end) = url.find("://") {
+            let after_scheme = &url[scheme_end + 3..];
+            if let Some(at_pos) = after_scheme.find('@') {
+                format!("{}://{}", &url[..scheme_end], &after_scheme[at_pos + 1..])
+            } else {
+                url.to_string()
+            }
+        } else {
+            url.to_string()
+        };
+
+        let mut request = client.request(reqwest_method, &request_url);
 
         // WR-03: Filter forbidden request headers for defense-in-depth
         // consistency with HttpRequestTool::call(). The same header blocklist
