@@ -20,7 +20,6 @@ use std::future::Future;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use reqwest::redirect;
 use tracing::warn;
 use wasmtime::Caller;
 
@@ -65,8 +64,7 @@ pub fn http_request_host_fn(
 ) -> Box<dyn Future<Output = i32> + Send + '_> {
     Box::new(async move {
         // Access SessionState at entry (D-11)
-        let state = caller.data();
-        let session_id = state.session_id;
+        let session_id = caller.data().session_id;
 
         // Get guest memory
         let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
@@ -229,18 +227,11 @@ pub fn http_request_host_fn(
             }
         };
 
-        // 6. Build and execute the reqwest request (T-04-05, T-04-07)
-        let client = match reqwest::Client::builder()
-            .redirect(redirect::Policy::limited(1))
-            .timeout(Duration::from_secs(30))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(%session_id, "http_request: failed to build reqwest client: {}", e);
-                return -1;
-            }
-        };
+        // 6. Execute the reqwest request using the session's shared HTTP client
+        //    (CR-01: reuse client across all calls to avoid resource leak from
+        //    constructing a fresh reqwest::Client per host function invocation).
+        //    reqwest::Client is Clone (Arc-wrapped internally), so cloning is cheap.
+        let client = caller.data().http_client.clone();
 
         let reqwest_method = match method.as_str() {
             "GET" => reqwest::Method::GET,

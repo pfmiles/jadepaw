@@ -23,6 +23,7 @@ fn make_session_state() -> SessionState {
     let n = DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
     let sandbox_root = std::env::temp_dir().join(format!("jadepaw-pool-test-{}", n));
     SessionState::new(session_id, tenant_id, capabilities, sandbox_root)
+        .expect("SessionState::new should succeed")
 }
 
 /// Fixture: creates noop.wasm guest bytes (module with empty _start).

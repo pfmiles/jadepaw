@@ -15,6 +15,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::limits::instance_hard::InstanceHardLimiter;
+use reqwest::redirect;
+use std::time::Duration;
 
 /// Resource limits for a single session.
 ///
@@ -55,6 +57,13 @@ pub struct SessionState {
     /// All guest-provided file paths are validated against this root via
     /// `validate_sandbox_path` before any I/O is performed.
     pub sandbox_root: PathBuf,
+    /// Shared HTTP client for Wasm guest host function calls.
+    ///
+    /// Reusing a single client across all `http_request` host function
+    /// invocations avoids the resource leak of constructing a fresh
+    /// reqwest::Client (with connection pool, TLS session cache, DNS resolver)
+    /// on every call. Initialized once during session creation.
+    pub http_client: reqwest::Client,
 }
 
 impl SessionState {
@@ -65,25 +74,42 @@ impl SessionState {
     ///
     /// `sandbox_root` is used by `validate_sandbox_path` to enforce path
     /// containment for all filesystem host functions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client (reqwest) fails to initialize,
+    /// e.g., due to missing TLS support.
     pub fn new(
         session_id: SessionId,
         tenant_id: TenantId,
         capabilities: InstanceCapabilities,
         sandbox_root: PathBuf,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let hard_limit = InstanceHardLimiter::new(capabilities.max_memory_mb);
-        Self {
+        let http_client = reqwest::Client::builder()
+            .redirect(redirect::Policy::limited(1))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build reqwest client for session: {e}"))?;
+        Ok(Self {
             session_id,
             tenant_id,
             capabilities,
             limits: SessionLimits { hard_limit },
             created_at: chrono::Utc::now(),
             sandbox_root,
-        }
+            http_client,
+        })
     }
 
     /// Create a session state with default (empty) capabilities and a given
     /// sandbox root. Convenience for testing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the reqwest HTTP client fails to initialize (e.g., no TLS support).
+    /// This is acceptable for tests — production code should use `new()` and propagate
+    /// the error.
     pub fn with_defaults(sandbox_root: PathBuf) -> Self {
         Self::new(
             SessionId::new(),
@@ -91,6 +117,7 @@ impl SessionState {
             InstanceCapabilities::default(),
             sandbox_root,
         )
+        .expect("HTTP client initialization required for tests")
     }
 }
 

@@ -77,7 +77,8 @@ async fn test_epoch_yield_spin_loop_trap() {
         TenantId::new(),
         InstanceCapabilities::default(),
         PathBuf::from("/tmp"),
-    );
+    )
+    .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     // Very high fuel — we want epoch to fire first, not fuel
@@ -210,7 +211,8 @@ async fn test_epoch_yield_cooperative_host_loop_trap() {
         TenantId::new(),
         InstanceCapabilities::default(),
         PathBuf::from("/tmp"),
-    );
+    )
+    .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     // Very high fuel — epoch should fire first

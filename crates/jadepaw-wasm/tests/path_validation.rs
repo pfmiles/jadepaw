@@ -156,6 +156,7 @@ fn validate_sandbox_path_accepts_nonexistent_file() {
 
 fn make_session_state(caps: InstanceCapabilities) -> SessionState {
     SessionState::new(SessionId::new(), TenantId::new(), caps, PathBuf::from("/tmp"))
+        .expect("SessionState::new should succeed")
 }
 
 /// Test 12: can_read_file returns true when path matches a PathPattern.

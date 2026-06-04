@@ -186,6 +186,9 @@ impl InstancePool {
     /// Returns an error if:
     /// - `InstancePre::instantiate_async` fails
     /// - Fuel/epoch configuration fails
+    ///
+    /// The `state` parameter must be a fully-initialized `SessionState` (created
+    /// via `SessionState::new()`), which now includes a shared `reqwest::Client`.
     pub async fn acquire(
         &self,
         session_id: SessionId,

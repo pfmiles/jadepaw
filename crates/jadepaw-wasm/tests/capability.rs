@@ -33,7 +33,8 @@ fn create_store(
     caps: InstanceCapabilities,
     sandbox: PathBuf,
 ) -> Store<SessionState> {
-    let state = SessionState::new(SessionId::new(), TenantId::new(), caps, sandbox);
+    let state = SessionState::new(SessionId::new(), TenantId::new(), caps, sandbox)
+        .expect("SessionState::new should succeed");
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     store.set_fuel(10_000_000).expect("set_fuel");

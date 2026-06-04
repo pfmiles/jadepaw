@@ -106,7 +106,8 @@ async fn guest_memory_grow_beyond_64mb_traps() {
         TenantId::new(),
         InstanceCapabilities::default(),
         PathBuf::from("/tmp"),
-    );
+    )
+    .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     store.set_fuel(1_000_000).expect("set_fuel");
@@ -153,7 +154,8 @@ async fn guest_infinite_loop_traps_from_fuel_exhaustion() {
         TenantId::new(),
         InstanceCapabilities::default(),
         PathBuf::from("/tmp"),
-    );
+    )
+    .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
     // Tiny fuel budget — 1000 units should run out fast
@@ -183,7 +185,8 @@ fn session_state_fields() {
     let tid = TenantId::new();
     let caps = InstanceCapabilities::default();
 
-    let state = SessionState::new(sid, tid, caps.clone(), PathBuf::from("/tmp"));
+    let state = SessionState::new(sid, tid, caps.clone(), PathBuf::from("/tmp"))
+        .expect("SessionState::new should succeed");
 
     assert_eq!(state.session_id, sid);
     assert_eq!(state.tenant_id, tid);
@@ -203,7 +206,8 @@ fn session_state_fields() {
 fn session_limits_from_capabilities() {
     let mut caps = InstanceCapabilities::default();
     caps.max_memory_mb = 128;
-    let state = SessionState::new(SessionId::new(), TenantId::new(), caps, PathBuf::from("/tmp"));
+    let state = SessionState::new(SessionId::new(), TenantId::new(), caps, PathBuf::from("/tmp"))
+        .expect("SessionState::new should succeed");
 
     // SessionLimits should have been created with the capabilities' max_memory_mb
     // We can't easily introspect InstanceHardLimiter, but we can test the limiter

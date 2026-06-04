@@ -57,6 +57,7 @@ fn make_session_state() -> SessionState {
     let capabilities = InstanceCapabilities::default();
     let sandbox_root = std::env::temp_dir();
     SessionState::new(session_id, tenant_id, capabilities, sandbox_root)
+        .expect("SessionState::new should succeed")
 }
 
 /// Report current process RSS on supported platforms.

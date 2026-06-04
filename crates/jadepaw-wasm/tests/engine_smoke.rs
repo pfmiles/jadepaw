@@ -22,7 +22,8 @@ async fn engine_smoke_full_pipeline() {
     let tenant_id = TenantId::new();
     let capabilities = InstanceCapabilities::default();
 
-    let session_state = SessionState::new(session_id, tenant_id, capabilities, PathBuf::from("/tmp"));
+    let session_state = SessionState::new(session_id, tenant_id, capabilities, PathBuf::from("/tmp"))
+        .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, session_state);
 
     // Register the ResourceLimiter (Pitfall 4 prevention)
@@ -71,7 +72,8 @@ async fn engine_has_fuel_enabled() {
         TenantId::new(),
         InstanceCapabilities::default(),
         PathBuf::from("/tmp"),
-    );
+    )
+    .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.limits.hard_limit);
 
@@ -92,7 +94,8 @@ async fn session_state_accessible_from_store() {
     let tid = TenantId::new();
     let caps = InstanceCapabilities::default();
 
-    let state = SessionState::new(sid, tid, caps, PathBuf::from("/tmp"));
+    let state = SessionState::new(sid, tid, caps, PathBuf::from("/tmp"))
+        .expect("SessionState::new should succeed");
     let mut store = Store::new(&engine, state);
 
     // Access via data()
