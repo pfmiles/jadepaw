@@ -43,7 +43,7 @@ This phase adds in-session context management and SQLite-based persistence to th
 ### Session Isolation
 - **D-08:** Repository-layer enforcement — `SessionStore` trait all methods require `session_id` and `tenant_id` as mandatory parameters. The type system prevents forgetting the WHERE clause at call sites. No raw `SqlitePool` access outside the store module.
 - **D-09:** SQLite WAL mode + `busy_timeout` — enable WAL for non-blocking concurrent reads (snapshot isolation), set `busy_timeout` (e.g., 5s) for orderly write serialization, `BEGIN IMMEDIATE` for write transactions. Connection pool size 3–5 max connections (SQLite is single-writer, but WAL readers don't block).
-- **D-09a:** The Wasm layer (Store-per-session, ResourceLimiter, sandbox_root) remains the primary security boundary. The database layer is an internal persistence store — not an attack surface exposed to guest code. Repository-layer enforcement (D-08) provides compiler-enforced correctness; WAL mode (D-09) provides pragmatic concurrency.
+- **D-09a [informational]:** The Wasm layer (Store-per-session, ResourceLimiter, sandbox_root) remains the primary security boundary. The database layer is an internal persistence store — not an attack surface exposed to guest code. Repository-layer enforcement (D-08) provides compiler-enforced correctness; WAL mode (D-09) provides pragmatic concurrency.
 
 ### Claude's Discretion
 No areas were deferred to Claude — all decisions were user-directed.
