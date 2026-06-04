@@ -242,16 +242,28 @@ pub fn http_request_host_fn(
             _ => unreachable!("method already validated against ALLOWED_METHODS"),
         };
 
-        // WR-04: Strip userinfo from URL before passing to reqwest.
+        // WR-04 / CR-01: Strip userinfo from URL before passing to reqwest.
         // The raw URL may contain user:password@ credentials embedded by
         // the guest Wasm code. While the guest controls its own request
         // content, passing userinfo in the URL leaks credentials to
         // intermediate proxies (URL logging) and is a bad practice.
         // Strip silently rather than rejecting — the guest can still
         // send credentials via the Authorization header explicitly.
+        //
+        // CR-01: The @ search must be restricted to the authority segment
+        // (between :// and first /, ?, or #) because @ can legally appear
+        // in path, query, and fragment per RFC 3986. Using the raw
+        // after_scheme.find('@') would corrupt URLs like
+        // `https://example.com/api?token=abc@xyz` into `https://xyz`.
         let request_url = if let Some(scheme_end) = url.find("://") {
             let after_scheme = &url[scheme_end + 3..];
-            if let Some(at_pos) = after_scheme.find('@') {
+            let authority_end = after_scheme
+                .find('/')
+                .or_else(|| after_scheme.find('?'))
+                .or_else(|| after_scheme.find('#'))
+                .unwrap_or(after_scheme.len());
+            let authority = &after_scheme[..authority_end];
+            if let Some(at_pos) = authority.rfind('@') {
                 format!("{}://{}", &url[..scheme_end], &after_scheme[at_pos + 1..])
             } else {
                 url.to_string()

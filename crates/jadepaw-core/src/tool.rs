@@ -40,11 +40,24 @@ pub fn extract_host_from_url(url: &str) -> &str {
         url
     };
 
-    // Strip userinfo (user:password@) — CR-01: prevent credential-based
-    // domain whitelist bypass. A URL like
-    // `http://whitelisted.com:pwd@evil.com/path` would otherwise return
-    // the username as the "host", defeating the domain capability check.
-    let after_userinfo = if let Some(idx) = after_scheme.find('@') {
+    // Find the end of the authority component (first /, ?, or #).
+    // CR-01: The @ that separates userinfo from host only belongs to the
+    // authority portion. An @ in the path, query, or fragment is NOT a
+    // userinfo delimiter and must not be treated as one (RFC 3986).
+    let authority_end = after_scheme
+        .find('/')
+        .or_else(|| after_scheme.find('?'))
+        .or_else(|| after_scheme.find('#'))
+        .unwrap_or(after_scheme.len());
+
+    let authority = &after_scheme[..authority_end];
+
+    // Strip userinfo from the authority portion only.
+    // Use rfind to find the LAST @ in the authority — per RFC 3986, the
+    // userinfo is everything before the last @, and the host follows.
+    let after_userinfo = if let Some(idx) = authority.rfind('@') {
+        // Reconstruct the full remainder: host (from authority) +
+        // the path/query/fragment portion that was excluded from the @ search.
         &after_scheme[idx + 1..]
     } else {
         after_scheme
@@ -306,6 +319,44 @@ mod tests {
         assert_eq!(
             extract_host_from_url("https://[fe80::1]"),
             "fe80::1"
+        );
+    }
+
+    /// CR-01: @ in path must not be treated as userinfo delimiter.
+    /// `https://example.com/path?q=user@host` should return "example.com",
+    /// NOT "host".
+    #[test]
+    fn extract_host_at_in_query() {
+        assert_eq!(
+            extract_host_from_url("https://example.com/path?q=user@host"),
+            "example.com"
+        );
+    }
+
+    /// CR-01: @ in query must not be treated as userinfo delimiter.
+    #[test]
+    fn extract_host_at_in_fragment() {
+        assert_eq!(
+            extract_host_from_url("https://example.com/path#user@host"),
+            "example.com"
+        );
+    }
+
+    /// CR-01: @ in path segment must not be treated as userinfo delimiter.
+    #[test]
+    fn extract_host_at_in_path() {
+        assert_eq!(
+            extract_host_from_url("https://example.com/path/foo@bar"),
+            "example.com"
+        );
+    }
+
+    /// CR-01: userinfo with @ in path must still correctly extract host.
+    #[test]
+    fn extract_host_userinfo_with_at_in_path() {
+        assert_eq!(
+            extract_host_from_url("https://user:pass@example.com/path?q=foo@bar"),
+            "example.com"
         );
     }
 }
