@@ -519,23 +519,19 @@ impl std::fmt::Display for SessionStatus {
 | A4 | `async-openai` 0.40 has the same `ChatCompletionRequestMessage` type structure as 0.34 (workspace upgraded from the original stack spec) | Code Examples | Low -- async-openai follows OpenAI API spec closely; message types are stable. |
 | A5 | No existing `sqlx::query!` usage in project means no `.sqlx` offline data exists -- need `cargo sqlx prepare` after first migration | Common Pitfalls | None -- this is a procedural step, not a risk. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Where should `SessionRepository` trait live?**
-   - What we know: CONTEXT.md D-04 says new `jadepaw-db` crate. CLAUDE.md architecture pattern says "Types in core, impl downstream." The team could define the trait in `jadepaw-core` and implement in `jadepaw-db` following the existing `HostFunctions` pattern (trait in jadepaw-core, impl in jadepaw-wasm).
-   - What's unclear: Whether the team wants to minimize crate count or follow the "one crate per concern" pattern.
-   - Recommendation: Follow the existing pattern -- define `SessionRepository` trait in `jadepaw-core` (minimizing deps), implement in `jadepaw-db`. This avoids making `jadepaw-agent` depend on `jadepaw-db` directly (it depends on `jadepaw-core` already).
+   - RESOLVED: D-04 specifies the trait lives in the new `jadepaw-db` crate (not jadepaw-core). The PLAN follows D-04 exactly — `SessionRepository` trait is defined in `jadepaw-db/src/repository.rs`, and `jadepaw-agent` takes a direct dependency on `jadepaw-db`. This is the "one crate per concern" pattern. The HostFunctions pattern (trait in core) was considered but D-04 is a locked decision that overrides.
+   - PLAN: 05-01 Task 2 (models + trait + migration) places the trait in `crates/jadepaw-db/src/repository.rs`.
 
 2. **Did async-openai 0.40 change `ChatCompletionRequestMessage` serde support?**
-   - What we know: async-openai 0.34's message types derive Serialize/Deserialize. Workspace now uses 0.40. CONTEXT.md canonical refs reference 0.34.
-   - What's unclear: Whether serde derives exist in 0.40.
-   - Recommendation: Planner should verify with `cargo doc` or a quick check before writing PLAN. If 0.40 removed serde support, define manual intermediate types in `jadepaw-db/src/models.rs` that map to/from the async-openai types.
+   - RESOLVED: Source inspection of async-openai 0.40.2 confirmed `ChatCompletionRequestMessage` still derives `Serialize` and `Deserialize`. No intermediate types needed.
+   - PLAN: 05-02 Task 3 (react_loop integration) and Task 4 (resume_session) use `serde_json::to_string(&messages)` and `serde_json::from_str::<Vec<ChatCompletionRequestMessage>>()` directly — no mapping layer required.
 
 3. **tiktoken-rs 0.12.0 C dependency compatibility?**
-   - What we know: tiktoken-rs 0.12.0 wraps OpenAI's C tiktoken library. Builds require a C compiler. macOS and Linux are supported. The deferred item mentions ~5MB WASM blob size concern.
-   - What's unclear: Whether the C build dependency causes issues in the current CI environment.
-   - Recommendation: This is a build-time dependency only (no runtime C code loaded into Wasm). The CONTEXT.md explicitly specifies tiktoken-rs v0.12, making this a locked decision, not a choice point. If build issues arise, the deferred alternative (`tiktoken` 3.x pure Rust) is available.
-
+   - RESOLVED: This is a build-time dependency only — the C compiler is available on all target platforms (macOS via Xcode CLT, Linux via build-essential). The CONTEXT.md D-02 specifies tiktoken-rs v0.12 as a locked decision. The deferred idea about WASM blob size is only monitored, not a blocker.
+   - PLAN: 05-02 Task 1 adds `tiktoken-rs = "0.12"` to `jadepaw-agent/Cargo.toml`. Task 2 (window.rs) imports and uses it. No workaround needed.
 ## Environment Availability
 
 | Dependency | Required By | Available | Version | Fallback |
