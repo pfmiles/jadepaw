@@ -1,8 +1,8 @@
 ---
 phase: 04-tool-system
-reviewed: 2026-06-04T12:00:00Z
+reviewed: 2026-06-04T19:00:00Z
 depth: standard
-files_reviewed: 20
+files_reviewed: 22
 files_reviewed_list:
   - crates/jadepaw-agent/Cargo.toml
   - crates/jadepaw-agent/src/lib.rs
@@ -25,213 +25,280 @@ files_reviewed_list:
   - crates/jadepaw-wasm/src/tool_impls/file_tool.rs
   - crates/jadepaw-wasm/src/tool_impls/http_tool.rs
   - crates/jadepaw-wasm/src/tool_impls/mod.rs
+  - Cargo.lock
+  - crates/jadepaw-agent/tests/agent_loop.rs
 findings:
   critical: 1
-  warning: 5
-  info: 3
-  total: 9
+  warning: 4
+  info: 2
+  total: 7
 status: issues_found
 ---
 
-# Phase 04: Code Review Report
+# Phase 04: Code Review Report (Fresh Adversarial Review)
 
-**Reviewed:** 2026-06-04T12:00:00Z
+**Reviewed:** 2026-06-04T19:00:00Z
 **Depth:** standard
-**Files Reviewed:** 20
+**Files Reviewed:** 22
 **Status:** issues_found
 
 ## Summary
 
-对 Phase 04 (tool-system) 的 20 个源文件进行了 standard 级别的独立审查（不参考前几轮 fix）。审查范围涵盖 `jadepaw-agent`（ReAct 循环编排、LLM 集成、SSE streaming、ToolRegistry）、`jadepaw-core`（数据类型、Tool trait、host URL 解析）、`jadepaw-wasm`（host 函数、SSRF 防护、Tool 实现）。
+This is a fresh adversarial review of the Phase 04 (tool-system) codebase, conducted against the current state with all six prior fixes applied (CR-01 saturating_add, WR-01 MaxIterations SSE event, WR-02 dual tracking variables, WR-03 u64::try_from, WR-04 unused session_id field, WR-05 fa_pos naming). The review covers 22 source files across `jadepaw-core`, `jadepaw-agent`, and `jadepaw-wasm`.
 
-总体架构设计良好：Tool / ToolRegistry / HostFunctions 三层分离清晰，能力检查（capability gate）在 Registry 层级集中执行是合理的安全设计。部分之前的修复（CR-01 FINAL ANSWER fallback、CR-02 HttpRequestTool::new fallible、WR-01 schema warning logging、WR-02 header JSON reject、WR-03 explicit method match、WR-04 StoreFailure variant）已融入当前代码，验证为正确实现。
+The shot-through design -- Tool trait / ToolRegistry / HostFunctions three-layer separation with capability gating centralized in Registry -- is architecturally sound. SSRF defense-in-depth (scheme validation, domain whitelist, IP-layer check, redirect limiting, body cap, timeout) has multiple overlapping layers.
 
-本轮审查新发现 1 个 critical 问题（`saturating_add` 可能导致 panic）、5 个 warning（边界行为、复杂度、未使用字段）和 3 个 info 项。
+This fresh review found **1 critical** issue (resource leak via per-call reqwest Client construction in `http_request_host_fn`) and several warnings/info items not covered by the prior review.
+
+**Previously fixed issues (all verified as correctly applied):**
+- CR-01: `checked_add` refactoring in bounds check closure
+- WR-01: `ReActStep::Error` event sent before MaxIterations exit
+- WR-02: Single `truncated` flag replacing dual `total`/`buf.len()` tracking
+- WR-03: `u64::try_from` replacing `as u64` for Duration conversion
+- WR-04: Removed unused `session_id` fields from FileReadTool/FileWriteTool
+- WR-05: Renamed `fa` to `final_answer_pos` in fallback branch
+- IN-01 through IN-03: Acknowledged as info-level
 
 ## Critical Issues
 
-### CR-01: `saturating_add` 在 bounds check 通过后仍可能导致越界 panic
+### CR-01: `http_request_host_fn` creates a new `reqwest::Client` on every Wasm guest call, leaking OS resources
 
-**File:** `crates/jadepaw-wasm/src/host/network.rs:115-131` (check 闭包), lines 156, 175, 200 (实际切片位置)
-**Issue:** 在 `http_request_host_fn` 中，method/headers/body 参数的 bounds check 使用了一个闭包 `check`（lines 116-127），该闭包通过 `saturating_add` 计算 `end` 并与 `mem_size` 比较。当 `end > mem_size` 时返回 `false` 触发拒绝。理论上这是正确的防御：无论 `len` 多大，`saturating_add` 饱和到 `usize::MAX`，而 `usize::MAX > mem_size` 总是成立（因为 `mem_size` 是 Wasm 线性内存大小，最多数 GB，远小于 `usize::MAX`）。
+**File:** `crates/jadepaw-wasm/src/host/network.rs:233-243`
+**Issue:** The `http_request_host_fn` (the Wasm guest-host boundary function) builds a fresh `reqwest::Client` on **every single invocation** from the guest:
 
-然而，问题在于 **check 闭包计算出的 `end` 值没有被传递给后续的切片操作**。在 line 156 的实际方法字符串读取中：
 ```rust
-let method = std::str::from_utf8(
-    &mem_data[method_start..method_start.saturating_add(method_len_usize)],
-)
-```
-当 `method_len_usize` 导致 `saturating_add` 饱和到 `usize::MAX` 时，range `method_start..usize::MAX` 在 Rust 的 slice indexing 中是**明确越界的** —— `usize::MAX` 远超 `mem_data.len()`，这会触发 **panic**，而非返回错误。
-
-**为什么 check 闭包能通过这个 case？** 因为 `check` 闭包中 `_start as usize` 使用了 `as` 转换（可能产生巨大值），而 `saturating_add` 保证 `end` 不会溢出。但 `_start` 本身的 `as` 转换可能把一个负的 `i32` 变成了很大的 `usize`（因为 Rust 的 `as` 是对负值的按位重解释）。例如 `method_ptr = -1`（即 `i32::MIN + 1`），`method_ptr as usize = usize::MAX - 1`，`saturating_add(10) = usize::MAX`。check 拒绝（`usize::MAX > mem_size` 为 true），所以 panic 不会触发。但如果 `_start` 恰好 ≤ `mem_size`（例如 `_start = mem_size - 5`）且 `len` 很大（例如 `i32::MAX as usize`），saturating 到 `usize::MAX`，check 拒绝。如果 `_start` ≤ `mem_size` 且 check 通过（`end ≤ mem_size`），说明 `len` 不是超大的，此时切片是安全的。
-
-经过仔细分析，**在当前逻辑中**，如果 check 闭包通过了（三个参数全部合法），那么后续切片时独立计算的 `saturating_add` 结果必然 ≤ `mem_size`，切片不会 panic。问题在于如果 check 闭包和实际切片之间的 `mem_size` 从独立计算变成了不同值 —— 这在 `fn check` 闭包中此时用的是同一个 `mem_size`。
-
-真正需要担心的是这个模式引入的 **维护风险**：如果未来有人修改了 check 逻辑或添加了新的参数但忘记同步切片时的 bounds 计算，很容易引入 panic 漏洞。当前的 correctness 依赖两个计算点的一致性由代码审查保证，而非编译器保证。
-
-**验证结果：**
-- `check` 闭包（line 117-127）使用 `mem_size`（line 81 获取）
-- 切片操作（line 156）使用独立的 `method_start.saturating_add(method_len_usize)`，其中 `method_start = method_ptr as usize`
-- 二者使用同一份 `mem_size`，数学上等价
-
-**结论：当前代码的实际行为是安全的** —— check 通过保证切片不会 panic。但模式脆弱，降级为 WARNING 级别的健壮性建议。
-
-**Fix:** 将 check 闭包的返回值改为 `Option<usize>`（返回验证过的 end position），切片时直接使用验证过的值，消除重复计算：
-```rust
-let check = |ptr: i32, len: i32, name: &str| -> Option<usize> {
-    let start = ptr as usize;
-    let len_usize = len as usize;
-    let end = start.checked_add(len_usize)?;
-    if end > mem_size {
-        warn!(%session_id, "http_request: {} pointer out of bounds", name);
-        None
-    } else {
-        Some(end)
+let client = match reqwest::Client::builder()
+    .redirect(redirect::Policy::limited(1))
+    .timeout(Duration::from_secs(30))
+    .build()
+{
+    Ok(c) => c,
+    Err(e) => {
+        warn!(%session_id, "http_request: failed to build reqwest client: {}", e);
+        return -1;
     }
 };
-let method_end = match check(method_ptr, method_len, "method") {
-    Some(e) => e,
-    None => return -1,
-};
-// 使用 method_start..method_end 切片，保证绝不越界
 ```
 
----
+Each `reqwest::Client` allocates:
+- An internal connection pool (by default up to 5 idle connections per host)
+- A DNS resolver 
+- TLS session cache
 
-重新审查后，确认当前代码的 check-and-then-use 模式对所有调用路径是安全的（check 使用 `mem_size`，后续切片也使用等价的 `mem_size` 和等价的 start/len 计算）。将 CR-01 降级为 **WARNING** 而不是 critical blocker。
+In a hostile scenario (malicious guest Wasm calling `http_request` in a tight loop with a 30s timeout), each call constructs and discards a full client with connection pool. The `Drop` of the old client (line 278: `drop(response)` followed by the `client` going out of scope at the end of the async block) should clean up connections, but the constant allocation/deallocation cycle of TLS contexts and connection pools under high-frequency calls constitutes a resource leak in practice -- it can exhaust file descriptors or TLS handshake slots on the host.
+
+Compare this to `HttpRequestTool::call()` (http_tool.rs lines 59-65), which builds the client once in `build_http_client()` and stores it in the struct. The tool-level path reuses the same client across all calls.
+
+**Why this is critical:** A malicious or buggy guest Wasm module can trigger thousands of `http_request` calls per second. Each call constructs a full reqwest client, potentially exhausting OS ephemeral ports, TLS handshake slots, or memory. This is a denial-of-service vector against the host, not just the guest.
+
+**Fix:** Construct the reqwest client once (at Engine or Pool level) and pass a shared reference to the host function. The host function should receive an `Arc<reqwest::Client>` from the call context:
+
+```rust
+// In the linker registration path, store Arc<reqwest::Client> in SessionState
+// or pass via Store data. Example:
+pub fn http_request_host_fn(
+    mut caller: Caller<'_, SessionState>,
+    method_ptr: i32, method_len: i32,
+    url_ptr: i32, url_len: i32,
+    headers_ptr: i32, headers_len: i32,
+    body_ptr: i32, body_len: i32,
+) -> Box<dyn Future<Output = i32> + Send + '_> {
+    Box::new(async move {
+        let state = caller.data();
+        let client = &state.http_client;  // stored once on SessionState
+        // ... rest of function uses client instead of building a new one
+    })
+}
+```
+
+This requires adding `http_client: reqwest::Client` (or `Arc<reqwest::Client>`) to `SessionState` and initializing it during session creation.
+
+---
 
 ## Warnings
 
-### WR-01: `react_loop` 因 `MaxIterations` 退出时 SSE stream 缺少终止事件
+### WR-01: `HttpRequestTool::Default::default()` panics on TLS initialization failure
 
-**File:** `crates/jadepaw-agent/src/loop.rs:287-290`
-**Issue:** 当 `react_loop` 的 `for` 循环在最后一个 iteration 后未找到 Finish 指令而返回 `LoopErrorKind::MaxIterations` 错误时，`trace` 中包含了所有 Thought/Action/Observation 步骤（它们已通过 `tx.send()` 推送到 SSE），但循环终止的 `Error` 事件从未发送到 SSE。SSE 消费者看到事件流中的最后一个可能是 Observation 或 ContinueThinking 的 Thought，然后 stream 因 `drop(tx)` 而正常关闭 —— 没有 "agent terminated due to iteration limit" 的 done/error 信号。消费者无法区分 "agent 正常完成" 和 "agent 因为 max iterations 而失败"。
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:188-192`
+**Issue:** The `Default` impl calls `Self::new().expect("HttpRequestTool::default() requires working TLS")`. If the runtime environment lacks TLS support (e.g., a minimal container without CA certificates or rustls feature misconfiguration), this panics at `Default` construction time, not at the call site. The `new()` method is correctly fallible (`-> anyhow::Result<Self>`), but `Default` converts a recoverable error into a fatal panic.
 
-**Fix:** 在返回 `MaxIterations` 错误前，通过 `tx` 发送一个 `ReActStep::Error` 事件：
+In practice, code that calls `HttpRequestTool::default()` or uses `#[derive(Default)]` on a struct containing `HttpRequestTool` will crash the process if TLS initialization fails, rather than propagating the error for the caller to handle gracefully.
+
+**Fix:** Either:
+1. Remove the `Default` impl entirely and require callers to use the fallible `new()`, or
+2. Make `Default` return a result via a separate trait:
 ```rust
-let _ = tx.send(ReActStep::Error {
-    message: format!("max iterations ({}) reached without completion",
-        guard_config.max_iterations),
-    turn: guard_config.max_iterations,
-}).await;
-return Err(loop_error(LoopErrorKind::MaxIterations {
-    iter: guard_config.max_iterations,
-    max: guard_config.max_iterations,
-}));
-```
-
-### WR-02: `HttpRequestTool::call()` body 读取逻辑中双重跟踪变量增加维护复杂度
-
-**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:391-438`
-**Issue:** body 读取逻辑同时使用 `total: usize`（总字节数）和 `buf.len()`（已缓存字节数）两个变量来跟踪。逻辑在以下方面正确：
-- `total` 追踪所有已读取字节（包括已缓存的），用于判断是否超过 cap
-- `buf` 只保存 ≤ 1MB 的数据
-- 当 `total > MAX_RESPONSE_BODY_SIZE` 时进入 drain 循环并 break
-
-但维护者需要理解 `total` 和 `buf.len()` 之间的语义差异。代码中 `if total > MAX_RESPONSE_BODY_SIZE` 的检查在 chunk 循环内（line 404），而 truncation 消息的构造在循环外（line 425），这两个位置都判断 `total > MAX_RESPONSE_BODY_SIZE`，结果一致（但因为 drain 循环已经消耗了所有剩余 chunks，`total` 在 drain 后不再变化）。
-
-**Fix:** 简化为单一跟踪方式，用 `buf.len() >= MAX_RESPONSE_BODY_SIZE` 控制循环：
-```rust
-let mut buf = Vec::with_capacity(MAX_RESPONSE_BODY_SIZE);
-let mut truncated = false;
-loop {
-    match response.chunk().await {
-        Ok(Some(bytes)) => {
-            if buf.len() + bytes.len() > MAX_RESPONSE_BODY_SIZE {
-                let space = MAX_RESPONSE_BODY_SIZE - buf.len();
-                buf.extend_from_slice(&bytes[..space]);
-                truncated = true;
-                while let Ok(Some(_)) = response.chunk().await {}
-                break;
+// Option A: Remove Default impl, keep only new()
+// Option B: Lazy-initialize the client on first call
+impl Default for HttpRequestTool {
+    fn default() -> Self {
+        Self::new().unwrap_or_else(|e| {
+            tracing::error!("HttpRequestTool::default() failed: {}", e);
+            // Return a degraded tool that returns errors on every call
+            Self {
+                client: None,  // requires Option<reqwest::Client>
+                allowed_methods: vec!["GET".into(), "POST".into(), "PUT".into(), "PATCH".into(), "DELETE".into()],
             }
-            buf.extend_from_slice(&bytes);
-        }
-        Ok(None) => break,
-        Err(e) => return ToolResult::Error { ... },
+        })
     }
 }
-```
-
-### WR-03: `guard.rs` 中 `as_millis() as u64` 截断可能在极端超时配置下丢失精度
-
-**File:** `crates/jadepaw-agent/src/guard.rs:119-120`
-**Issue:** `Duration::as_millis()` 返回 `u128`，通过 `as u64` 转换为 `u64`。在默认配置（300秒 = 300,000ms）下完全安全。但 `GuardConfig` 的 `wall_clock_timeout` 是公开字段，理论上可以被配置为超过约 5.8 亿年（`u64::MAX` 毫秒），此时 `as u64` 会发生静默截断导致错误的 timeout 报告值。虽然这在实际使用中不会发生，但 `as` 转换缺少溢出检查是一个健壮性问题。
-
-**Fix:** 使用 `u64::try_from` 或至少 `saturating` 替代裸 `as`：
-```rust
-let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-let max_ms = u64::try_from(config.wall_clock_timeout.as_millis()).unwrap_or(u64::MAX);
-```
-
-### WR-04: `FileReadTool` 和 `FileWriteTool` 中的 `session_id` 字段存储但从未使用
-
-**File:** `crates/jadepaw-wasm/src/tool_impls/file_tool.rs:35, 154`
-**Issue:** 两个 struct 都存储了 `session_id: SessionId`（注释说明为 logging/audit），由 `new()` 构造时传入。但在 `call()` 方法中，实际使用的是 `_session_id: SessionId` 参数（来自 `ToolRegistry::call_tool()` 在 dispatch 前获取的当前 session ID）。存储的 `self.session_id` 从未在日志或任何其他路径中被读取。`#[allow(dead_code)]` 属性（lines 30, 149）抑制了编译器警告。
-
-如果将来添加日志记录，使用 `self.session_id` 会记录构造时的 session ID（可能是错误的，因为 Tool 实例可能跨 session 复用），而 `_session_id` 参数才是当前调用链的正确 ID。
-
-**Fix:** 移除 `session_id` 字段和 `new()` 中的对应参数，或在 `call()` 中使用 `session_id` 参数（非 `self.session_id`）添加日志：
-```rust
-async fn call(&self, args: Value, session_id: SessionId) -> ToolResult {
-    tracing::debug!(%session_id, "FileReadTool::call");
-    // ...existing logic...
-}
-```
-如果移除字段，`new()` 的签名简化为 `fn new(sandbox_root: PathBuf) -> Self`。
-
-### WR-05: `parse_next_action` 中 `fa_pos` 在 match arm 内的 fallback 分支存在变量重名歧义
-
-**File:** `crates/jadepaw-agent/src/llm.rs:295-301`
-**Issue:** 在 match arm `(_, Some(act))` 中（line 241），当 ACTION 解析全部失败后（行 276-291），fallback 逻辑（line 295）使用 `if let Some(fa) = fa_pos` 检查之前在第 231 行计算的 `fa_pos`。这里 `fa_pos` 是 `Option<usize>` 类型的变量，而 `if let Some(fa)` 解构的是 `fa_pos` 的值 —— 正确无误。但变量名 `fa` 可能与 match arm `(Some(fa), Some(act)) if fa < act =>` 中的 pattern variable `fa` 混淆。当前 match arm 是 `(_, Some(act))` 不与 `fa` 绑定，所以不存在 shadowing。但代码读者容易认为 `fa_pos` 是从 match pattern 来的。
-
-**Fix:** 重命名内部 fallback 变量以提高可读性：
-```rust
-if let Some(final_answer_pos) = fa_pos {
-    let answer = after_thought[final_answer_pos + "FINAL ANSWER:".len()..]
-        .trim().to_string();
-    if !answer.is_empty() {
-        return LlmDirective::Finish { thought, answer };
-    }
-}
-```
-
-## Info
-
-### IN-01: `jadepaw-wasm/Cargo.toml` 中的 `redis` 依赖使用旧格式
-
-**File:** `crates/jadepaw-wasm/Cargo.toml:30-32`
-**Issue:** `redis` 依赖使用独立的 `[dependencies.redis]` table 格式声明（`workspace = true`, `optional = true`），而项目采用 Rust 2024 edition（按 CLAUDE.md 中的 version 约束 1.85+）。2024 edition 推荐使用内联格式 `redis = { workspace = true, optional = true }` 放在 `[dependencies]` table 中。当前格式在 Rust 1.85+ 下可以编译，但未来可能产生 deprecation warning。
-
-**Fix:** 合并到 `[dependencies]` table：
-```toml
-[dependencies]
-redis = { workspace = true, optional = true }
-# 删除独立的 [dependencies.redis] section
-```
-
-### IN-02: `extract_host_from_url` 在 `jadepaw-core` 和 `jadepaw-wasm` 中有重复测试
-
-**File:** `crates/jadepaw-core/src/tool.rs:242-311` 和 `crates/jadepaw-wasm/src/host/network.rs:404-425`
-**Issue:** `extract_host_from_url` 的测试用例在核心实现（`jadepaw-core/src/tool.rs`）和委托包装（`jadepaw-wasm/src/host/network.rs`，line 336 delegate 到 `jadepaw_core::extract_host_from_url`）中重复出现。wasm 端的 `network.rs:404-425` 测试与 core 端的相同测试完全重复。在 core 端添加新测试用例时，wasm 端不会自动覆盖。
-
-**Fix:** 从 `network.rs` 中移除 `extract_host_*` 测试块（lines 404-425），因为它们已在 core 中完整覆盖。wasm 端的测试应专注于 `is_blocked_ip` 和 `resolve_and_check_ssrf_addr`。
-
-### IN-03: Per-turn fuel budget `1_000_000` 是魔法数字
-
-**File:** `crates/jadepaw-agent/src/loop.rs:155`
-**Issue:** Wasm fuel 重置使用行内字面量 `1_000_000`。D-10 Pitfall 3 规定了此值，但未提取为命名常量。若未来需要按 tenant 或 complexity tier 调整 fuel budget，需要在代码库中搜索和替换此字面量。
-
-**Fix:**
-```rust
-/// Per-turn Wasm fuel budget in fuel units (D-10 Pitfall 3).
-const PER_TURN_FUEL_BUDGET: u64 = 1_000_000;
-
-// usage:
-session.store_mut().set_fuel(PER_TURN_FUEL_BUDGET)
 ```
 
 ---
 
-_Reviewed: 2026-06-04T12:00:00Z_
+### WR-02: `ToolRegistry::call_tool()` performs two independent `name_index` lookups creating a TOCTOU inconsistency window
+
+**File:** `crates/jadepaw-agent/src/tool_registry.rs:107-137`
+**Issue:** `call_tool()` calls `self.get_by_name(name)` at line 108, which internally does `self.name_index.get(name)` at line 81. Then at line 125, it does another `self.name_index.get(name)` to retrieve the `ToolId` for the capability check.
+
+If concurrent code removes the tool entry from `name_index` between lines 108 and 125 (e.g., another thread calling a hypothetical `unregister()` method), the second lookup returns `None` and the code returns `INTERNAL_ERROR`. Even without explicit unregistration, the pattern is fragile because it relies on the atomicity of two separate `DashMap::get` operations.
+
+The `get_by_name()` result at line 108 already retrieved the tool, but its `ToolId` is lost because `get_by_name` returns `Arc<dyn Tool>`, not `(ToolId, Arc<dyn Tool>)`.
+
+**Fix:** Refactor `get_by_name` to return the `ToolId` alongside the tool, eliminating the second lookup:
+```rust
+pub fn get_by_name(&self, name: &str) -> Option<(ToolId, Arc<dyn Tool>)> {
+    let id = self.name_index.get(name)?;
+    let tool = self.tools.get(&*id).map(|entry| Arc::clone(entry.value()))?;
+    Some((*id, tool))
+}
+
+// In call_tool():
+let (tool_id, tool) = match self.get_by_name(name) {
+    Some(t) => t,
+    None => {
+        return ToolResult::from_error("UNKNOWN_TOOL", ...);
+    }
+};
+```
+
+---
+
+### WR-03: `http_request_host_fn` does not validate or reject forbidden request headers unlike `HttpRequestTool::call()`
+
+**File:** `crates/jadepaw-wasm/src/host/network.rs:254-256` vs `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:324-351`
+**Issue:** The `HttpRequestTool::call()` implementation (lines 324-351) blocks dangerous request headers (`host`, `content-length`, `transfer-encoding`, `proxy-authorization`, `connection`, `expect`) and rejects header values containing CR/LF sequences (header injection prevention). However, the `http_request_host_fn` (lines 254-256) passes all headers through without any filtering:
+
+```rust
+for (key, value) in &headers {
+    request = request.header(key.as_str(), value.as_str());
+}
+```
+
+The rationale is that the host function's `headers` come from guest memory and the guest is sandboxed, so a guest setting `Host: internal-service` is a self-inflicted attack. However, the `Host` header specifically can interact with virtual hosting on the target server, and `Transfer-Encoding` could potentially interact with front-end proxies in unexpected ways. While these headers were set by the guest itself (not an external attacker), the inconsistency creates a scenario where:
+1. The Tool-level API (agent path) correctly blocks dangerous headers
+2. The Wasm-level API (guest direct path) silently passes them
+
+This asymmetry means a guest that has capability to call `http_request` directly (bypassing the Tool layer) can set headers that the Tool layer would reject.
+
+**Mitigation:** The guest is already sandboxed and the domain whitelist is checked before any request. The guest controlling headers is part of its own execution. However, for defense-in-depth consistency, the same header filtering should apply in both paths.
+
+**Fix:** Extract the header filtering logic into a shared function used by both `http_request_host_fn` and `HttpRequestTool::call()`:
+```rust
+// In host/network.rs, shared helper:
+pub(crate) const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
+    "host", "content-length", "transfer-encoding",
+    "proxy-authorization", "connection", "expect",
+];
+
+pub(crate) fn filter_request_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers.iter()
+        .filter(|(k, v)| {
+            let lower = k.to_lowercase();
+            FORBIDDEN_REQUEST_HEADERS.contains(&lower.as_str())
+                || v.contains('\r') || v.contains('\n')
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+```
+
+---
+
+### WR-04: `extract_host_from_url` strips userinfo but `http_request_host_fn` passes the raw URL (with credentials) to reqwest
+
+**File:** `crates/jadepaw-wasm/src/host/network.rs:100, 254`
+**Issue:** The `http_request_host_fn` correctly strips userinfo from the URL for the domain capability check (line 100: `let domain = extract_host_from_url(url)`). However, the raw `url` string (which may contain `user:password@`) is passed directly to reqwest at line 254:
+
+```rust
+let mut request = client.request(reqwest_method, url);
+```
+
+reqwest will parse the userinfo from the URL and send it as a basic auth `Authorization` header. The guest code is sandboxed, so the credentials come from the guest itself -- not from host secrets. However, if a Skill author embeds third-party API credentials in their Wasm guest code (bad practice but plausible), those credentials would be sent to the target server in cleartext URL form.
+
+This is not a vulnerability in the host's security model (the guest controls its own request content), but it is a privacy/data-exfiltration concern: the userinfo portion is logged by intermediate proxies and servers, making credential leakage more likely than if credentials were sent via the `Authorization` header.
+
+**Fix:** Strip userinfo from the URL before passing to reqwest. If userinfo is present, return an error or strip it silently:
+```rust
+// After extracting domain, strip userinfo from the actual URL used for the request
+let request_url = if url.contains('@') && url.contains("://") {
+    // Strip userinfo portion: http://user:pass@host/path -> http://host/path
+    // This is a best-effort; more robust URL parsing should use the url crate.
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        if let Some(at_pos) = after_scheme.find('@') {
+            format!("{}://{}", &url[..scheme_end], &after_scheme[at_pos + 1..])
+        } else {
+            url.to_string()
+        }
+    } else {
+        url.to_string()
+    }
+} else {
+    url.to_string()
+};
+```
+
+Alternatively, reject URLs containing userinfo with an explicit error.
+
+---
+
+## Info
+
+### IN-01: `stream_llm_response` parameter named `close_signal` is confusing -- it is actually an `mpsc::Sender`
+
+**File:** `crates/jadepaw-agent/src/llm.rs:162`
+**Issue:** The function signature declares `close_signal: &mpsc::Sender<ReActStep>` as a parameter. The doc comment says "The close_signal parameter is used to detect channel close (graceful early termination if the SSE consumer disconnects)." The actual usage at line 188 is `close_signal.is_closed()` -- it is only used to check if the channel is closed, and never used for sending.
+
+The issue is that the type `&mpsc::Sender<ReActStep>` is used both at the call site (`react_loop` passes `tx`) and in the function body, but the function only needs a `Receiver` or a simpler `Closed` check mechanism. The name `close_signal` describes the purpose well, but reading the function body requires the reader to understand that `close_signal.is_closed()` checks the sender's connected state.
+
+**Fix:** Rename the parameter to better reflect its purpose. Consider extracting a simple `ConnectionState` wrapper:
+```rust
+pub struct ConnectionState {
+    tx: mpsc::Sender<ReActStep>,
+}
+
+impl ConnectionState {
+    pub fn is_connected(&self) -> bool {
+        !self.tx.is_closed()
+    }
+}
+```
+Then `stream_llm_response` receives `&ConnectionState` and checks `conn.is_connected()`.
+
+---
+
+### IN-02: `resolve_and_check_ssrf` helper shadows the `host` field in `SsrfDnsError::Blocked` variant
+
+**File:** `crates/jadepaw-wasm/src/tool_impls/http_tool.rs:79-115`, `crates/jadepaw-wasm/src/host/network.rs:292-298`
+**Issue:** The `resolve_and_check_ssrf` function at http_tool.rs line 79 takes a parameter `host: &str`. The error mapping at line 97 matches `SsrfDnsError::Blocked { host: _, ip }` -- the `host` field from the error is bound to `_` (unused) because the function already has `host` in scope from the parameter. This works correctly but is a subtle naming collision that could confuse readers.
+
+The error message at line 100-103 uses the parameter `host` (from the function signature) rather than the error's `host` field. Since `resolve_and_check_ssrf_addr` (the callee) passes the same hostname into the error, the two values are identical, so there is no correctness issue. But the pattern is fragile: if the callee ever normalizes the hostname before storing it in the error, the error message would show the original (non-normalized) host while the error struct carries the normalized version.
+
+**Fix:** Destructure with an explicit ignore comment:
+```rust
+SsrfDnsError::Blocked { host: blocked_host, ip } => ToolResult::Error {
+    code: "SSRF_BLOCKED".to_string(),
+    message: format!(
+        "Host '{}' resolved to blocked IP address {} ...",
+        blocked_host, ip
+    ),
+    retryable: false,
+},
+```
+
+---
+
+_Reviewed: 2026-06-04T19:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
