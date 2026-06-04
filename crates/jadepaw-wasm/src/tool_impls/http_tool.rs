@@ -185,12 +185,6 @@ impl HttpRequestTool {
     }
 }
 
-impl Default for HttpRequestTool {
-    fn default() -> Self {
-        Self::new().expect("HttpRequestTool::default() requires working TLS")
-    }
-}
-
 #[async_trait]
 impl Tool for HttpRequestTool {
     fn name(&self) -> &str {
