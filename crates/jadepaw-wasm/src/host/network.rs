@@ -243,7 +243,39 @@ pub fn http_request_host_fn(
         };
 
         let mut request = client.request(reqwest_method, url);
+
+        // WR-03: Filter forbidden request headers for defense-in-depth
+        // consistency with HttpRequestTool::call(). The same header blocklist
+        // and CR/LF injection check applied in the agent tool API path is also
+        // enforced here on the guest Wasm host function path.
+        const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
+            "host",
+            "content-length",
+            "transfer-encoding",
+            "proxy-authorization",
+            "connection",
+            "expect",
+        ];
         for (key, value) in &headers {
+            let key_lower = key.to_lowercase();
+            if FORBIDDEN_REQUEST_HEADERS.contains(&key_lower.as_str()) {
+                warn!(
+                    %session_id,
+                    header = %key,
+                    "http_request: forbidden header '{}' was dropped",
+                    key
+                );
+                continue;
+            }
+            if value.contains('\r') || value.contains('\n') {
+                warn!(
+                    %session_id,
+                    header = %key,
+                    "http_request: header '{}' value contains CR/LF — possible injection attempt, header dropped",
+                    key
+                );
+                continue;
+            }
             request = request.header(key.as_str(), value.as_str());
         }
         if let Some(ref body_bytes) = body {
