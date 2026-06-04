@@ -290,7 +290,7 @@ pub async fn react_loop(
                 "max iterations ({}) reached without completion",
                 guard_config.max_iterations
             ),
-            turn: guard_config.max_iterations,
+            turn: guard_config.max_iterations.saturating_sub(1),
         })
         .await;
     return Err(loop_error(LoopErrorKind::MaxIterations {
