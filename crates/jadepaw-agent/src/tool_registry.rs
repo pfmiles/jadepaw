@@ -74,12 +74,18 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Look up a tool by name.
+    /// Look up a tool by name, returning both the `ToolId` and the tool.
     ///
     /// Returns `None` if no tool with the given name is registered.
-    pub fn get_by_name(&self, name: &str) -> Option<Arc<dyn Tool>> {
+    ///
+    /// Returning the `ToolId` alongside the tool avoids a second
+    /// `name_index` lookup in `call_tool()`, eliminating a TOCTOU
+    /// window where a concurrent unregistration could cause the
+    /// capability check to see a missing entry (WR-02).
+    pub fn get_by_name(&self, name: &str) -> Option<(ToolId, Arc<dyn Tool>)> {
         let id = self.name_index.get(name)?;
-        self.tools.get(&*id).map(|entry| Arc::clone(entry.value()))
+        let tool = self.tools.get(&*id).map(|entry| Arc::clone(entry.value()))?;
+        Some((*id, tool))
     }
 
     /// MCP-compatible `tools/call` with capability enforcement (D-01, D-04).
@@ -104,8 +110,10 @@ impl ToolRegistry {
         args: serde_json::Value,
         session: &jadepaw_wasm::SessionHandle,
     ) -> ToolResult {
-        // Step 1: Lookup tool by name
-        let tool = match self.get_by_name(name) {
+        // Step 1: Lookup tool by name (returns both ToolId and tool from a
+        // single `name_index` lookup, eliminating the TOCTOU window where a
+        // second lookup could miss a concurrently-removed entry — WR-02).
+        let (tool_id, tool) = match self.get_by_name(name) {
             Some(t) => t,
             None => {
                 let available: Vec<String> =
@@ -122,19 +130,6 @@ impl ToolRegistry {
         };
 
         // Step 2: Capability check (D-01 — authoritative policy decision point)
-        let tool_id = match self.name_index.get(name) {
-            Some(id) => *id,
-            None => {
-                return ToolResult::from_error(
-                    "INTERNAL_ERROR",
-                    &format!(
-                        "Tool '{}' found in tools but not in name_index",
-                        name
-                    ),
-                    false,
-                );
-            }
-        };
 
         // Scope the capability check in a block so the store borrow is
         // dropped before `tool.call()` which may also need store access
@@ -245,7 +240,7 @@ mod tests {
 
         let found = registry.get_by_name("echo");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().name(), "echo");
+        assert_eq!(found.unwrap().1.name(), "echo");
     }
 
     #[test]
