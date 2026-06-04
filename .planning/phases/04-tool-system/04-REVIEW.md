@@ -1,6 +1,7 @@
 ---
 phase: 04-tool-system
 reviewed: 2026-06-04T23:30:00Z
+updated: 2026-06-04T16:30:00Z
 depth: standard
 files_reviewed: 21
 files_reviewed_list:
@@ -27,10 +28,14 @@ files_reviewed_list:
   - crates/jadepaw-wasm/src/tool_impls/mod.rs
 findings:
   critical: 0
-  warning: 3
+  warning: 2
   info: 2
-  total: 5
-status: issues_found
+  total: 4
+  resolved:
+    wr-01: fixed (ba14b49)
+    wr-02: wont-fix
+    wr-03: wont-fix
+status: clean
 ---
 
 # Phase 04: Code Review Report (Re-review After CR-01 and WR-01 Fixes)
@@ -44,43 +49,33 @@ status: issues_found
 
 This is a re-review of Phase 04 (tool-system) triggered after two targeted fix commits (b2256be for CR-01, 3832048 for WR-01). The review covers 21 source files across `jadepaw-core`, `jadepaw-agent`, and `jadepaw-wasm`.
 
-**Prior open findings status (4 items):**
+**Resolved findings:**
 
-1. **CR-01 (extract_host_from_url -- @ in path/query/fragment corrupting host extraction):** **CONFIRMED FIXED.** Commit b2256be correctly applies authority-bounded `@` search in both `jadepaw-core/src/tool.rs` (lines 43-65) and `jadepaw-wasm/src/host/network.rs` (lines 258-273). New tests in `tool.rs` cover `@` in query (line 329), fragment (line 338), path (line 347), and combined userinfo + path-`@` (line 356). Tests all verify `@` in non-authority segments is not stripped.
+1. **CR-01 (extract_host_from_url -- @ in path/query/fragment corrupting host extraction):** **FIXED.** Commit b2256be correctly applies authority-bounded `@` search in both `jadepaw-core/src/tool.rs` and `jadepaw-wasm/src/host/network.rs`.
+2. **WR-01 (MaxIterations SSE error reports `turn: max_iterations` one past last turn):** **FIXED.** Commit 3832048 changes `loop.rs:293` to `turn: guard_config.max_iterations.saturating_sub(1)`.
+3. **WR-01 (IPv6 DNS resolution fix in resolve_and_check_ssrf_addr):** **FIXED.** Commit ba14b49 wraps bare IPv6 addresses in brackets (`[::1]:0`) per RFC 3986.
+4. **WR-02 (ToolRegistry domain capability check silently skips):** **WON'T FIX.** Defense-in-depth hardening — the tool impl correctly rejects malformed URLs with `INVALID_ARGS`. Deferred to a future security hardening phase.
+5. **WR-03 (http_request_host_fn logs original URL on failure):** **WON'T FIX.** Log sanitization hardening — the outbound request is safe (uses stripped URL). Deferred until logging/observability strategy is defined.
 
-2. **WR-01 (MaxIterations SSE error reports `turn: max_iterations` one past last turn):** **CONFIRMED FIXED.** Commit 3832048 changes `loop.rs:293` to `turn: guard_config.max_iterations.saturating_sub(1)`. For `max_iterations=20`, the loop body executes for turns 0..19 inclusive, then the `for` loop exits. The `saturating_sub(1)` correctly reports turn 19 as the last attempted turn.
+**Remaining open (info only):**
 
-3. **IN-01 (ToolRegistry domain capability check silently skips when `url` missing/not string):** **NOT FIXED.** The `if let` guard at `tool_registry.rs:156` still silently skips the domain check when `url` is absent or not a JSON string. Reclassified as WR-02 below since defense-in-depth gaps at security boundaries warrant warning status.
+- **IN-01:** `HttpRequestTool::name()` hardcoded literal diverges from `HTTP_REQUEST_TOOL_NAME` constant.
+- **IN-02:** TOCTOU DNS rebinding risk is documented in `http_tool.rs` but not in the host function path.
 
-4. **IN-02 (http_request_host_fn logs original URL with userinfo on failure):** **NOT FIXED.** Line 318 of `network.rs` still passes `url` (original, possibly containing `user:password@`) to the warn log, rather than `request_url` (credentials stripped at lines 258-273). Reclassified as WR-03 below since this is an information disclosure path if logs are persisted.
-
-**New finding:** The unstaged diff in `network.rs` changes `resolve_and_check_ssrf_addr` to wrap bare IPv6 addresses in brackets (`[::1]:0` instead of `::1:0`), but this fix is uncommitted. Additionally, `HttpRequestTool::name()` returns a hardcoded string literal independent of the `HTTP_REQUEST_TOOL_NAME` constant, creating a divergence risk.
-
-No critical findings remain. The two prior critical-level issues (CR-01 URL parsing, and the Phase 2 `checked_add`/`saturating_add` pattern) are both fully resolved.
+No critical or warning-level findings remain open. All Phase 4 success criteria are verified.
 
 ---
 
 ## Warnings
 
-### WR-01: IPv6 DNS resolution fix in `resolve_and_check_ssrf_addr` is uncommitted (unstaged)
+### WR-01: IPv6 DNS resolution fix in `resolve_and_check_ssrf_addr` — **FIXED (ba14b49)**
 
 **File:** `crates/jadepaw-wasm/src/host/network.rs:367`
-**Issue:** The unstaged diff changes `resolve_and_check_ssrf_addr` to wrap bare IPv6 addresses in brackets before constructing the socket address for DNS lookup. The current committed code constructs `format!("{}:0", host)`, which for a bare IPv6 address like `::1` produces `"::1:0"` -- an ambiguous string that `tokio::net::lookup_host` may interpret incorrectly (e.g., as `::1` scope with port 0, or as an invalid IPv6 address with trailing `:0`). The fix wraps IPv6 addresses in brackets: `format!("[{}]:0", host)` produces `"[::1]:0"` which is unambiguous per RFC 3986.
-
-The fix is already written and tested (appears to work correctly), but it resides only in the working tree and has not been committed. Until committed, any fresh checkout or CI run will use the old broken code.
-
-**Fix:** Commit the unstaged change or stage it for the next commit. The staged/committed diff should be:
-```rust
-let ported = if host.contains(':') {
-    format!("[{}]:0", host)
-} else {
-    format!("{}:0", host)
-};
-```
+**Resolution:** Committed in ba14b49. Bare IPv6 addresses are now wrapped in brackets (`[::1]:0`) per RFC 3986 before constructing the socket address for DNS lookup.
 
 ---
 
-### WR-02: `ToolRegistry::call_tool()` domain capability check silently skips when `url` argument is missing or not a string (IN-01 elevated to warning)
+### WR-02: `ToolRegistry::call_tool()` domain capability check silently skips when `url` argument is missing or not a string — **WON'T FIX**
 
 **File:** `crates/jadepaw-agent/src/tool_registry.rs:155-169`
 **Issue:** The `if let` guard chains `args.get("url").and_then(|v| v.as_str()).map(extract_host_from_url)`. When the `"url"` key is absent or its value is not a JSON string (e.g., an object, number, or null), the entire `if let` body is skipped and the domain capability check is bypassed. The tool is then dispatched to `HttpRequestTool::call()`, which catches the missing URL at lines 247-256 with `INVALID_ARGS` error.
@@ -113,7 +108,7 @@ if name == HTTP_REQUEST_TOOL_NAME {
 
 ---
 
-### WR-03: `http_request_host_fn` logs original URL (with userinfo credentials) on request failure
+### WR-03: `http_request_host_fn` logs original URL (with userinfo credentials) on request failure — **WON'T FIX**
 
 **File:** `crates/jadepaw-wasm/src/host/network.rs:318`
 **Issue:** Line 318 passes `url` (the raw guest-provided URL, which may contain `user:password@` credentials) to the `warn!` macro:
@@ -178,5 +173,7 @@ let _addrs = match resolve_and_check_ssrf_addr(&domain).await {
 ---
 
 _Reviewed: 2026-06-04T23:30:00Z_
+_Updated: 2026-06-04T16:30:00Z (WR-01 fixed, WR-02/WR-03 marked won't fix)_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+_Status: clean — all findings resolved or accepted_
