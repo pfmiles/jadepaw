@@ -131,6 +131,11 @@ impl SkillIndex {
 }
 
 /// Build a `SkillIndexRecord` from a parsed `SkillManifest`.
+///
+/// Derives a stable `SkillId` from `tenant_id` + skill name using UUID v5
+/// so that re-syncs update the same database row instead of creating orphan
+/// records. The namespace UUID is a fixed value (DNS namespace per RFC 4122)
+/// to ensure deterministic derivation.
 fn build_index_record(
     manifest: SkillManifest,
     tenant_id: TenantId,
@@ -139,8 +144,18 @@ fn build_index_record(
     let tools_json = serde_json::to_string(&manifest.tools).unwrap_or_else(|_| "[]".to_string());
     let now = chrono::Utc::now();
 
+    // Derive a stable SkillId from tenant_id + skill_name so re-syncs
+    // update the same database row instead of creating orphans.
+    // Uses SHA-1-based UUID v5 with the DNS namespace.
+    let namespace = uuid::Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        .expect("hardcoded UUID v5 namespace is valid");
+    let stable_id = SkillId::from(uuid::Uuid::new_v5(
+        &namespace,
+        format!("{}:{}", tenant_id, &manifest.name).as_bytes(),
+    ));
+
     SkillIndexRecord {
-        skill_id: SkillId::new(),
+        skill_id: stable_id,
         tenant_id,
         name: manifest.name,
         description: manifest.description,
@@ -200,8 +215,38 @@ mod tests {
         assert_eq!(record.version, Some("1.0.0".to_string()));
         assert!(record.tools_json.contains("read_file"));
         assert_eq!(record.file_path, "/tmp/test-skill/SKILL.md");
-        // Verify skill_id is non-zero
+        // Verify skill_id is non-zero (UUID v5 from deterministic namespace)
         assert!(*record.skill_id != uuid::Uuid::nil());
+    }
+
+    /// CR-03 regression: the same (tenant_id, name) must produce the same SkillId
+    /// on every call, so re-syncs update rather than create orphan records.
+    #[test]
+    fn build_index_record_stable_skill_id() {
+        use uuid::Uuid;
+
+        let tenant_id = TenantId::from(Uuid::parse_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap());
+
+        let manifest1 = SkillManifest {
+            name: "stable-test".to_string(),
+            description: "A".to_string(),
+            tools: vec![],
+            constraints: None,
+            version: None,
+            author: None,
+            metadata: None,
+            source_path: std::path::PathBuf::from("/tmp/SKILL.md"),
+        };
+        let record1 = build_index_record(manifest1.clone(), tenant_id, "/tmp/A".to_string());
+
+        let manifest2 = SkillManifest {
+            tools: vec!["read_file".to_string()],
+            ..manifest1
+        };
+        let record2 = build_index_record(manifest2, tenant_id, "/tmp/B".to_string());
+
+        // Same (tenant_id, name) —> same SkillId
+        assert_eq!(record1.skill_id, record2.skill_id);
     }
 
     #[test]
