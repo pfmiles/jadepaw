@@ -1,19 +1,31 @@
 //! # jadepaw-skill
 //!
-//! Skill system: declarative skill format, interactive creation via LLM dialogue,
-//! natural-language-to-Wasm compilation, versioning, and distribution.
+//! Skill system: declarative skill format, SKILL.md parsing and validation,
+//! system prompt injection, and runtime skill management.
 //!
 //! ## What lives here
 //!
-//! - Declarative skill format (structured Markdown/YAML skeleton)
-//! - Interactive skill creation via dialogue-guided LLM
-//! - Skill compiler: natural language specification -> Wasm bytecode
-//! - Skill registry: catalog, versioning, git-based distribution
-//! - Skill packaging and publishing pipeline
+//! - SKILL.md parser (YAML frontmatter → validated SkillManifest + Markdown body)
+//! - Skill name and description validation (Agent Skills open standard rules)
+//! - SkillManifest type re-exports from jadepaw-core
 //!
 //! ## What does NOT live here
 //!
 //! - Wasm runtime execution (see jadepaw-wasm)
 //! - Agent loop or LLM client (see jadepaw-agent)
 //! - Core data types (see jadepaw-core)
-//! - HTTP transport (see jadepaw-gateway)
+
+pub mod manifest;
+pub mod parser;
+pub mod validation;
+
+// Future modules (activated in subsequent plans):
+// pub mod registry;
+// pub mod manager;
+// pub mod injector;
+// pub mod loader;
+// pub mod index;
+
+pub use manifest::SkillManifest;
+pub use parser::parse_skill_file;
+pub use validation::validate_skill_name;
