@@ -20,8 +20,14 @@
 pub mod migrations;
 pub mod models;
 pub mod repository;
+pub mod skill_models;
+pub mod skill_repository;
 pub mod sqlite_repo;
+pub mod sqlite_skill_repo;
 
 pub use models::{SessionSnapshot, SessionStatus, SessionSummary};
 pub use repository::SessionRepository;
+pub use skill_models::{SkillIndexRecord, SkillIndexSummary};
+pub use skill_repository::SkillRepository;
 pub use sqlite_repo::SqliteSessionRepo;
+pub use sqlite_skill_repo::SqliteSkillRepo;
