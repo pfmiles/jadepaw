@@ -25,6 +25,7 @@ pub mod llm;
 pub mod r#loop;
 pub mod stream;
 pub mod tool_registry;
+pub mod window;
 
 use std::convert::Infallible;
 use std::env::temp_dir;
