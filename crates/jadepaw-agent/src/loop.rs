@@ -316,22 +316,28 @@ pub async fn react_loop(
         if let Some(repo) = session_repo {
             let elapsed = elapsed_accumulator_ms
                 + start.elapsed().as_millis() as u64;
+            // Serialize each JSON blob; skip the entire checkpoint on failure
+            // rather than overwriting good DB data with a fallback value.
+            let Ok(messages_json) = serde_json::to_string(&messages) else {
+                tracing::error!("failed to serialize messages for checkpoint; skipping");
+                continue;
+            };
+            let Ok(trace_json) = serde_json::to_string(&trace) else {
+                tracing::error!("failed to serialize trace for checkpoint; skipping");
+                continue;
+            };
+            let Ok(guard_config_json) = serde_json::to_string(guard_config) else {
+                tracing::error!("failed to serialize guard config for checkpoint; skipping");
+                continue;
+            };
+
             let snapshot = SessionSnapshot {
                 session_id,
                 tenant_id,
                 status: SessionStatus::Running,
-                messages_json: serde_json::to_string(&messages).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "failed to serialize messages for checkpoint");
-                    "[]".to_string()
-                }),
-                trace_json: serde_json::to_string(&trace).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "failed to serialize trace for checkpoint");
-                    "[]".to_string()
-                }),
-                guard_config_json: serde_json::to_string(guard_config).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "failed to serialize guard config for checkpoint");
-                    "{}".to_string()
-                }),
+                messages_json,
+                trace_json,
+                guard_config_json,
                 elapsed_ms: elapsed,
                 iteration_count: turn + 1,
                 created_at: session_created_at,
