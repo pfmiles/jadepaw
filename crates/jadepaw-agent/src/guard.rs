@@ -114,16 +114,33 @@ where
                         }
                     }
                 } else {
-                    // Fallback: unknown errors are classified as traps with the
-                    // original error message preserved for debugging.
+                    // Fallback: unknown errors are classified as infrastructure
+                    // errors (not Wasm traps). We may still be able to extract
+                    // a turn number from the error message if the loop annotated
+                    // it with the |turn=N| marker.
                     let err_msg = e.to_string();
-                    let turn = extract_turn_from_error(&err_msg).unwrap_or(0);
-                    JadepawError::agent_terminated(
-                        AgentTerminationReason::WasmTrap {
-                            reason: err_msg,
-                            turn,
-                        },
-                    )
+                    match extract_turn_from_error(&err_msg) {
+                        Some(turn) => {
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::InfrastructureError {
+                                    reason: err_msg,
+                                    turn,
+                                },
+                            )
+                        }
+                        None => {
+                            // Turn could not be parsed — the error happened
+                            // outside the loop or the marker was not present.
+                            // Use a sentinel turn value to indicate "unknown"
+                            // rather than collapsing to 0.
+                            JadepawError::agent_terminated(
+                                AgentTerminationReason::InfrastructureError {
+                                    reason: err_msg,
+                                    turn: u32::MAX,
+                                },
+                            )
+                        }
+                    }
                 }
             })
         }
