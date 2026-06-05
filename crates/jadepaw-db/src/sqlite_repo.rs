@@ -121,8 +121,9 @@ impl SessionRepository for SqliteSessionRepo {
         // session_id exists under a different tenant. Surface as error.
         if result.rows_affected() == 0 {
             anyhow::bail!(
-                "cross-tenant session_id collision: session {} exists under a different tenant",
-                session_id
+                "cross-tenant session_id collision: session {} belongs to a different tenant (attempted insert with tenant {})",
+                session_id,
+                tenant_id
             );
         }
         Ok(())
