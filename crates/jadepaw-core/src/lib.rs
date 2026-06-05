@@ -23,6 +23,7 @@ pub mod capabilities;
 pub mod error;
 pub mod guest_exports;
 pub mod host_functions;
+pub mod skill_types;
 pub mod tool;
 pub mod types;
 
@@ -33,4 +34,5 @@ pub use error::{JadepawError, Result};
 pub use guest_exports::{GuestExports, NextAction, ToolChoice, ToolDef};
 pub use host_functions::HostFunctions;
 pub use tool::{extract_host_from_url, Tool, ToolDefinition, ToolResult};
+pub use skill_types::{SkillId, SkillManifest, SkillValidationError};
 pub use types::{SessionId, TenantId, ToolId};
