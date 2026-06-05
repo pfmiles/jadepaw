@@ -90,8 +90,11 @@ pub fn compress_context(
 ) -> Vec<ChatCompletionRequestMessage> {
     let n_msgs_to_keep = (recent_n as usize).saturating_mul(2);
 
-    // If the message list is already short, nothing to compress.
-    if messages.len() <= n_msgs_to_keep + 2 {
+    // Need at least 3 more messages than we can keep for meaningful compression.
+    // Otherwise we'd add a summary message but only "remove" a single old message,
+    // leaving the total count unchanged and causing infinite re-compression.
+    // See REVIEW-FIX.md CR-01 for the full analysis.
+    if messages.len() <= n_msgs_to_keep + 3 {
         return messages;
     }
 
@@ -118,19 +121,59 @@ pub fn compress_context(
         .into();
 
     // Reconstruct: [system prompt] + [user msg] + [summary system msg] + [recent N turns]
-    let mut result = Vec::with_capacity(3 + recent.len());
+    let recent_len = recent.len();
+    let mut result = Vec::with_capacity(3 + recent_len);
     // Keep the original system prompt and user message.
     if messages.len() >= 2 {
         result.push(messages[0].clone());
         result.push(messages[1].clone());
     }
-    result.push(summary_msg);
+    result.push(summary_msg.clone());
     result.extend(recent);
 
-    // Verify the compressed result is actually under the context window.
-    // If not, fall back to returning just the recent N turns + summary
-    // (drop the original system/user if still too large).
-    let _ = model; // model used only for potential future model-aware summary size control
+    // Verify compression actually reduced the message list. If compression
+    // is a no-op on message count (edge case at the exact boundary, e.g.
+    // n_msgs_to_keep + 3 total where the old message count equals the new
+    // summary-injected count), apply aggressive fallback: summary + recent N
+    // turns only, dropping the original system prompt and user message to
+    // guarantee reduction.
+    if result.len() >= messages.len() {
+        tracing::warn!(
+            original_len = messages.len(),
+            compressed_len = result.len(),
+            recent_n = recent_n,
+            "compression did not reduce message count; applying aggressive fallback"
+        );
+        let mut fallback = Vec::with_capacity(1 + recent_len);
+        fallback.push(summary_msg);
+        // Re-extract recent messages from the original body since `recent`
+        // was consumed above. We know `body.len() > n_msgs_to_keep` at this
+        // point (guarded above).
+        let body = &messages[2..];
+        let split = body.len().saturating_sub(n_msgs_to_keep);
+        fallback.extend(body[split..].iter().cloned());
+        return fallback;
+    }
+
+    // Verify token count actually decreased. If not, the model context
+    // window may still be exceeded even with fewer messages (e.g., very
+    // long individual messages).
+    let compressed_tokens = count_tokens(&result, model);
+    let original_tokens = count_tokens(&messages, model);
+    if compressed_tokens >= original_tokens {
+        tracing::warn!(
+            original_tokens = original_tokens,
+            compressed_tokens = compressed_tokens,
+            recent_n = recent_n,
+            "compression did not reduce token count; applying aggressive fallback"
+        );
+        let mut fallback = Vec::with_capacity(1 + recent_len);
+        fallback.push(summary_msg);
+        let body = &messages[2..];
+        let split = body.len().saturating_sub(n_msgs_to_keep);
+        fallback.extend(body[split..].iter().cloned());
+        return fallback;
+    }
 
     result
 }
