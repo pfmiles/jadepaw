@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jadepaw_core::ReActStep;
+use jadepaw_core::{ReActStep, TenantId};
 use jadepaw_wasm::{InstancePool, PoolConfig};
 
 /// Helper: compile a minimal no-op WAT module to Wasm bytes.
@@ -67,6 +67,7 @@ async fn run_agent_returns_structured_response() {
     let client = async_openai::Client::with_config(config);
     let result = jadepaw_agent::run_agent(
         jadepaw_core::AgentRequest::default(),
+        TenantId::default(),
         pool,
         client,
         "gpt-4",

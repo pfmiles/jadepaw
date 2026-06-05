@@ -65,6 +65,7 @@ use jadepaw_db::{self, SessionRepository, SessionStatus};
 /// - A termination guard fires (iteration limit, wall-clock timeout)
 pub async fn run_agent(
     req: AgentRequest,
+    tenant_id: TenantId,
     pool: Arc<InstancePool>,
     llm_client: Client<Box<dyn Config>>,
     model: &str,
@@ -122,7 +123,7 @@ pub async fn run_agent(
             &registry,
             None,                       // session_repo: no persistence for fresh sessions
             session_id,
-            TenantId::default(),
+            tenant_id,
             vec![],                    // pre_existing_messages
             vec![],                    // pre_existing_trace
             0,                         // elapsed_accumulator_ms
