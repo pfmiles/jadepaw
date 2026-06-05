@@ -113,6 +113,13 @@ impl SkillManager {
             loaded_at: chrono::Utc::now(),
         };
 
+        // Step 5a: Deduplicate by name before insertion.
+        // The registry does NOT deduplicate (caller responsibility — see
+        // registry.rs doc comment). Remove any existing skill with the same
+        // name to prevent duplicates that would break merge_active() and
+        // cause stale entries after unload().
+        self.registry.remove(tenant_id, skill_name);
+
         // Step 6: Insert into registry
         self.registry.insert(tenant_id, loaded);
 
