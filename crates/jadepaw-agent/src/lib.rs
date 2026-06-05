@@ -240,11 +240,25 @@ pub async fn resume_session(
             )
         })?;
 
-    // 3. Deserialize guard config, fall back to default on parse failure
+    // 3. Defensive check: if pre_existing_messages is empty (snapshot
+    // corruption, deserialization producing zero messages, manual DB
+    // manipulation), return an infrastructure error rather than passing
+    // an empty message list to react_loop, which would produce degenerate
+    // output from build_initial_messages.
+    if messages.is_empty() {
+        return Err(JadepawError::agent_terminated(
+            jadepaw_core::AgentTerminationReason::InfrastructureError {
+                reason: "corrupted session snapshot: pre_existing_messages is empty".to_string(),
+                turn: 0,
+            },
+        ));
+    }
+
+    // 4. Deserialize guard config, fall back to default on parse failure
     let guard_config: guard::GuardConfig =
         serde_json::from_str(&snapshot.guard_config_json).unwrap_or_default();
 
-    // 4. Update status to Running before entering the loop.
+    // 5. Update status to Running before entering the loop.
     // Log failures at error level — an incorrect DB status means crash
     // recovery (mark_running_as_paused) won't detect this session.
     if let Err(e) = repo
@@ -259,7 +273,7 @@ pub async fn resume_session(
         );
     }
 
-    // 5. Acquire fresh Wasm Store — D-06a: Stores are NOT serialized
+    // 6. Acquire fresh Wasm Store — D-06a: Stores are NOT serialized
     let state = SessionState::with_defaults(temp_dir());
     let mut handle = pool.acquire(session_id, state).await.map_err(|e| {
         JadepawError::agent_terminated(
@@ -270,7 +284,7 @@ pub async fn resume_session(
         )
     })?;
 
-    // 6. Create SSE channel
+    // 7. Create SSE channel
     let (tx, sse_stream) = stream::create_sse_channel();
 
     let registry = tool_registry.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
@@ -284,7 +298,7 @@ pub async fn resume_session(
         llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
     };
 
-    // 7. Run react_loop with pre-existing state, persisting at turn boundaries
+    // 8. Run react_loop with pre-existing state, persisting at turn boundaries
     let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
             &guard_config,
@@ -313,7 +327,7 @@ pub async fn resume_session(
 
     let trace = trace?;
 
-    // 8. Update status to Ended. Log failures at error level — if this
+    // 9. Update status to Ended. Log failures at error level — if this
     // update fails, the session remains "running" in the DB and would be
     // picked up by crash recovery on next startup (mark_running_as_paused),
     // creating a zombie session.
