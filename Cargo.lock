@@ -1559,14 +1559,23 @@ dependencies = [
 name = "jadepaw-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
+ "chrono",
  "jadepaw-agent",
  "jadepaw-bus",
  "jadepaw-core",
+ "jadepaw-db",
  "jadepaw-gateway",
  "jadepaw-skill",
  "jadepaw-wasm",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

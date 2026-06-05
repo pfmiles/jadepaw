@@ -29,7 +29,7 @@ use super::registry::{LoadedSkill, SkillRegistry, SkillSwap};
 /// Designed to be shared as `Arc<SkillManager>` across the agent runtime.
 pub struct SkillManager {
     registry: Arc<SkillRegistry>,
-    skills_root: PathBuf,
+    pub skills_root: PathBuf,
 }
 
 impl SkillManager {

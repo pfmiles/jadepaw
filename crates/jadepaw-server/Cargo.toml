@@ -11,8 +11,17 @@ jadepaw-bus = { path = "../jadepaw-bus" }
 jadepaw-agent = { path = "../jadepaw-agent" }
 jadepaw-skill = { path = "../jadepaw-skill" }
 jadepaw-gateway = { path = "../jadepaw-gateway" }
+jadepaw-db = { path = "../jadepaw-db" }
 axum = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "chrono", "uuid", "runtime-tokio"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+uuid = { workspace = true }
+anyhow = "1.0"
 
 [features]
 default = ["single-node"]
