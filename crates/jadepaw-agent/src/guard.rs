@@ -12,6 +12,7 @@
 //! - Iteration limit checked inside the loop body (exact boundary)
 //! - Wall-clock timeout cannot be reset or extended by any code path
 
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::time::Duration;
 
@@ -20,12 +21,15 @@ use jadepaw_core::{AgentTerminationReason, JadepawError, ReActStep};
 use crate::r#loop::LoopErrorKind;
 
 /// Configuration for termination guards.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GuardConfig {
     /// Maximum number of ReAct loop iterations.
     pub max_iterations: u32,
     /// Maximum wall-clock time allowed for the entire agent run.
     pub wall_clock_timeout: Duration,
+    /// Number of recent turns to preserve verbatim during context compression.
+    /// Default: 5 (D-01).
+    pub recent_turns: u32,
 }
 
 impl Default for GuardConfig {
@@ -33,7 +37,16 @@ impl Default for GuardConfig {
         Self {
             max_iterations: 20,
             wall_clock_timeout: Duration::from_secs(300),
+            recent_turns: 5,
         }
+    }
+}
+
+impl GuardConfig {
+    /// Return the configured number of recent turns to preserve verbatim
+    /// during context window compression.
+    pub fn recent_turns(&self) -> u32 {
+        self.recent_turns
     }
 }
 

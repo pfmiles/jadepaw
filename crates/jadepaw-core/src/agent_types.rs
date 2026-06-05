@@ -29,6 +29,12 @@ pub struct AgentRequest {
     pub user_message: String,
     /// Optional context string (system prompts, skill instructions, etc.).
     pub context: Option<String>,
+    /// Optional session ID to resume from.
+    ///
+    /// When set, the agent loads the session snapshot from the database
+    /// and continues execution from where it left off (D-06b).
+    #[serde(default)]
+    pub resume_from: Option<SessionId>,
 }
 
 impl Default for AgentRequest {
@@ -37,6 +43,7 @@ impl Default for AgentRequest {
             session_id: SessionId::new(),
             user_message: String::new(),
             context: None,
+            resume_from: None,
         }
     }
 }

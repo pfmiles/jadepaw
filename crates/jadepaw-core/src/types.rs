@@ -40,6 +40,12 @@ impl Default for SessionId {
     }
 }
 
+impl From<Uuid> for SessionId {
+    fn from(u: Uuid) -> Self {
+        Self(u)
+    }
+}
+
 /// Unique identifier for a tenant.
 ///
 /// Uses UUID v7 (time-ordered) for database index friendliness.
@@ -70,6 +76,12 @@ impl fmt::Display for TenantId {
 impl Default for TenantId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<Uuid> for TenantId {
+    fn from(u: Uuid) -> Self {
+        Self(u)
     }
 }
 
