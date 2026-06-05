@@ -63,7 +63,6 @@ async fn main() -> anyhow::Result<()> {
     let skill_repo: Arc<dyn SkillRepository> =
         Arc::new(SqliteSkillRepo::new(pool.clone()));
     let skill_index = SkillIndex::new(skill_repo.clone());
-    let skill_loader = SkillLoader::new(skills_root.clone());
 
     let scan_entries = {
         let loader_clone = skills_root.clone(); // used in blocking task
