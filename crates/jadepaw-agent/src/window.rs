@@ -53,7 +53,21 @@ pub fn count_tokens(messages: &[ChatCompletionRequestMessage], model: &str) -> u
     let bpe = model_tokenizer(model);
     let mut total = 0;
     for msg in messages {
-        let text = serde_json::to_string(msg).unwrap_or_default();
+        let text = match serde_json::to_string(msg) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to serialize message for token counting; using conservative estimate"
+                );
+                // Return a conservative estimate of 100 tokens for an
+                // un-serializable message, ensuring compression is biased
+                // toward safety (compressing early is better than
+                // overflowing the context window).
+                total += 100;
+                continue;
+            }
+        };
         total += bpe.encode_with_special_tokens(&text).len();
     }
     total
