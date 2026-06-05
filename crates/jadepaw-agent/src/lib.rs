@@ -36,6 +36,7 @@ use async_openai::config::Config;
 use axum::response::sse::Event;
 use futures::stream::Stream;
 use jadepaw_core::{AgentRequest, AgentResponse, JadepawError, ReActStep, SessionId, TenantId};
+use jadepaw_skill::SkillManager;
 use jadepaw_wasm::{InstancePool, SessionState};
 use jadepaw_db::{self, SessionRepository, SessionStatus};
 
@@ -70,6 +71,7 @@ pub async fn run_agent(
     llm_client: Client<Box<dyn Config>>,
     model: &str,
     tool_registry: Option<Arc<ToolRegistry>>,
+    skill_manager: Option<Arc<SkillManager>>,
 ) -> core::result::Result<(AgentResponse, impl Stream<Item = core::result::Result<Event, Infallible>>), JadepawError>
 {
     let session_id = req.session_id;
@@ -99,9 +101,18 @@ pub async fn run_agent(
     let registry = tool_registry.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
-    // Augment system prompt with tool descriptions if tools are registered
+    // Build skill-aware augmented system prompt (D-03).
     let tool_definitions = registry.list_tools();
-    let augmented_prompt = if tool_definitions.is_empty() {
+    let augmented_prompt = if let Some(ref sm) = skill_manager {
+        if sm.has_active_skills(tenant_id) {
+            let (skill_block, _tool_names) = sm.merge_active(tenant_id);
+            llm::build_skill_augmented_prompt(system_prompt, &skill_block, &tool_definitions)
+        } else if tool_definitions.is_empty() {
+            system_prompt.to_string()
+        } else {
+            llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
+        }
+    } else if tool_definitions.is_empty() {
         system_prompt.to_string()
     } else {
         llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
@@ -121,6 +132,7 @@ pub async fn run_agent(
             context,
             &tx,
             &registry,
+            skill_manager.clone(),
             None,                       // session_repo: no persistence for fresh sessions
             session_id,
             tenant_id,
@@ -191,6 +203,7 @@ pub async fn resume_session(
     model: &str,
     repo: &dyn SessionRepository,
     tool_registry: Option<Arc<ToolRegistry>>,
+    skill_manager: Option<Arc<SkillManager>>,
 ) -> core::result::Result<
     (
         AgentResponse,
@@ -290,9 +303,18 @@ pub async fn resume_session(
     let registry = tool_registry.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
     let system_prompt = llm::REACT_SYSTEM_PROMPT;
 
-    // Augment system prompt with tool descriptions
+    // Build skill-aware augmented system prompt (D-03).
     let tool_definitions = registry.list_tools();
-    let augmented_prompt = if tool_definitions.is_empty() {
+    let augmented_prompt = if let Some(ref sm) = skill_manager {
+        if sm.has_active_skills(tenant_id) {
+            let (skill_block, _tool_names) = sm.merge_active(tenant_id);
+            llm::build_skill_augmented_prompt(system_prompt, &skill_block, &tool_definitions)
+        } else if tool_definitions.is_empty() {
+            system_prompt.to_string()
+        } else {
+            llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
+        }
+    } else if tool_definitions.is_empty() {
         system_prompt.to_string()
     } else {
         llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
@@ -310,6 +332,7 @@ pub async fn resume_session(
             None, // context: already part of pre_existing_messages
             &tx,
             &registry,
+            skill_manager.clone(),
             Some(repo),                         // session_repo
             session_id,
             tenant_id,
@@ -373,8 +396,8 @@ pub async fn resume_session(
 // Re-export key public types
 pub use guard::{run_with_guard, GuardConfig};
 pub use llm::{
-    REACT_SYSTEM_PROMPT, build_initial_messages, build_system_prompt_with_tools,
-    parse_next_action, stream_llm_response,
+    REACT_SYSTEM_PROMPT, build_initial_messages, build_skill_augmented_prompt,
+    build_system_prompt_with_tools, parse_next_action, stream_llm_response,
 };
 pub use r#loop::react_loop;
 pub use stream::create_sse_channel;

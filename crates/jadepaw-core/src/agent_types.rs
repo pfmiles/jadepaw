@@ -35,6 +35,13 @@ pub struct AgentRequest {
     /// and continues execution from where it left off (D-06b).
     #[serde(default)]
     pub resume_from: Option<SessionId>,
+    /// Skill names to activate for this agent session.
+    ///
+    /// Each entry is a kebab-case skill name matching a directory under
+    /// the tenant's skills directory. Skills are loaded by the server
+    /// (Plan 03) before calling `run_agent()`.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 impl Default for AgentRequest {
@@ -44,6 +51,7 @@ impl Default for AgentRequest {
             user_message: String::new(),
             context: None,
             resume_from: None,
+            skills: Vec::new(),
         }
     }
 }

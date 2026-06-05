@@ -8,8 +8,8 @@
 //!
 //! - Tools are stored in `DashMap<ToolId, Arc<dyn Tool>>` for lock-free
 //!   concurrent reads (same pattern as Phase 2's InstancePool).
-//! - A `DashMap<String, ToolId>` name index provides O(1) name→id lookup.
-//! - `call_tool()` performs three steps: lookup → capability check → dispatch.
+//! - A `DashMap<String, ToolId>` name index provides O(1) name->id lookup.
+//! - `call_tool()` performs three steps: lookup -> capability check -> dispatch.
 //! - The capability gate (`can_call_tool()`) is the authoritative policy
 //!   decision point — tool impls are never called directly from the ReAct loop.
 //!
@@ -22,19 +22,71 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use jadepaw_core::{extract_host_from_url, Tool, ToolDefinition, ToolId, ToolResult};
+use jadepaw_core::{extract_host_from_url, Tool, ToolDefinition, ToolId, ToolLookup, ToolResult};
 use jadepaw_wasm::HTTP_REQUEST_TOOL_NAME;
+
+/// Error returned when tool registration fails due to a naming conflict.
+///
+/// Per D-04, duplicate tool names are detected at registration time and
+/// returned as `Err` instead of panicking. This enables priority-based
+/// conflict resolution at the SkillManager level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolConflictError {
+    /// A tool with the same name is already registered.
+    DuplicateTool {
+        name: String,
+        existing_priority: u8,
+        new_priority: u8,
+    },
+
+    /// Two skills declare the same tool with incompatible schemas at the same priority.
+    SchemaMismatch {
+        name: String,
+    },
+}
+
+impl std::fmt::Display for ToolConflictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateTool {
+                name,
+                existing_priority,
+                new_priority,
+            } => {
+                write!(
+                    f,
+                    "duplicate tool name '{}': existing priority {}, new priority {}",
+                    name, existing_priority, new_priority
+                )
+            }
+            Self::SchemaMismatch { name } => {
+                write!(
+                    f,
+                    "schema mismatch for tool '{}': different schemas at same priority level require manual resolution",
+                    name
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ToolConflictError {}
 
 /// Central registry for all tools available to the agent.
 ///
 /// Thread-safe via `DashMap`. Provides MCP-compatible `tools/list` and
 /// `tools/call` interfaces (D-02). Designed to be shared across sessions
 /// as `Arc<ToolRegistry>`.
+///
+/// Implements `ToolLookup` so `SkillManager` can validate tool declarations
+/// during skill loading without a direct dependency on `jadepaw-agent`.
 pub struct ToolRegistry {
     /// Tool ID to tool instance mapping.
     tools: DashMap<ToolId, Arc<dyn Tool>>,
     /// Tool name to Tool ID index for O(1) name lookup.
     name_index: DashMap<String, ToolId>,
+    /// Priority storage per tool for D-04 conflict resolution.
+    tools_priority: DashMap<ToolId, u8>,
 }
 
 impl ToolRegistry {
@@ -43,25 +95,50 @@ impl ToolRegistry {
         Self {
             tools: DashMap::new(),
             name_index: DashMap::new(),
+            tools_priority: DashMap::new(),
         }
     }
 
     /// Register a tool in the registry.
     ///
-    /// Returns the assigned `ToolId`. Panics if a tool with the same name
-    /// is already registered — duplicate detection at registration time
-    /// is a fail-fast programmer error enforcement.
-    pub fn register(&self, tool: Arc<dyn Tool>) -> ToolId {
+    /// Returns the assigned `ToolId` on success, or `ToolConflictError` if a
+    /// tool with the same name is already registered (D-04).
+    ///
+    /// # Arguments
+    ///
+    /// * `tool` — the tool to register
+    /// * `priority` — the tool's priority for conflict resolution (higher wins)
+    pub fn register(
+        &self,
+        tool: Arc<dyn Tool>,
+        priority: u8,
+    ) -> Result<ToolId, ToolConflictError> {
         let id = ToolId::new();
         let name = tool.name().to_string();
 
-        if self.name_index.contains_key(&name) {
-            panic!("ToolRegistry: duplicate tool name '{}'", name);
+        if let Some(existing_id) = self.name_index.get(&name) {
+            let existing_priority = self
+                .tools_priority
+                .get(&*existing_id)
+                .map(|p| *p)
+                .unwrap_or(0);
+            return Err(ToolConflictError::DuplicateTool {
+                name,
+                existing_priority,
+                new_priority: priority,
+            });
         }
 
         self.name_index.insert(name, id);
+        self.tools_priority.insert(id, priority);
         self.tools.insert(id, tool);
-        id
+        Ok(id)
+    }
+
+    /// Get the priority of a tool by name, if registered.
+    pub fn get_priority(&self, name: &str) -> Option<u8> {
+        let id = self.name_index.get(name)?;
+        self.tools_priority.get(&*id).map(|p| *p)
     }
 
     /// MCP-compatible `tools/list`.
@@ -92,9 +169,10 @@ impl ToolRegistry {
     ///
     /// # Execution flow
     ///
-    /// 1. Lookup tool by name → `UNKNOWN_TOOL` error if not found
-    /// 2. Capability check via `session.state().can_call_tool()` → `CAPABILITY_DENIED` error if rejected
-    /// 3. Dispatch to `tool.call(args, session_id)`
+    /// 1. Lookup tool by name -> `UNKNOWN_TOOL` error if not found
+    /// 2. Capability check via `session.state().can_call_tool()` -> `CAPABILITY_DENIED` error if rejected
+    /// 3. Per-operation domain check for http_request tool (D-01a)
+    /// 4. Dispatch to `tool.call(args, session_id)`
     ///
     /// # Errors
     ///
@@ -112,7 +190,7 @@ impl ToolRegistry {
     ) -> ToolResult {
         // Step 1: Lookup tool by name (returns both ToolId and tool from a
         // single `name_index` lookup, eliminating the TOCTOU window where a
-        // second lookup could miss a concurrently-removed entry — WR-02).
+        // second lookup could miss a concurrently-removed entry -- WR-02).
         let (tool_id, tool) = match self.get_by_name(name) {
             Some(t) => t,
             None => {
@@ -129,7 +207,7 @@ impl ToolRegistry {
             }
         };
 
-        // Step 2: Capability check (D-01 — authoritative policy decision point)
+        // Step 2: Capability check (D-01 -- authoritative policy decision point)
 
         // Scope the capability check in a block so the store borrow is
         // dropped before `tool.call()` which may also need store access
@@ -172,6 +250,13 @@ impl ToolRegistry {
         // Step 3: Dispatch to tool
         let session_id = session.store().data().session_id;
         tool.call(args, session_id).await
+    }
+}
+
+impl ToolLookup for ToolRegistry {
+    fn lookup_by_name(&self, name: &str) -> Option<(ToolId, ToolDefinition)> {
+        let (id, tool) = self.get_by_name(name)?;
+        Some((id, tool.to_definition()))
     }
 }
 
@@ -235,7 +320,7 @@ mod tests {
             name: "echo".to_string(),
             description: "Echoes input".to_string(),
         });
-        let id = registry.register(tool);
+        let id = registry.register(tool, 0).unwrap();
         assert!(!id.to_string().is_empty());
 
         let found = registry.get_by_name("echo");
@@ -244,8 +329,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate tool name")]
-    fn test_registry_duplicate_name_panics() {
+    fn test_registry_duplicate_name_returns_err() {
         let registry = ToolRegistry::new();
         let tool1 = Arc::new(EchoTool {
             name: "dup".to_string(),
@@ -255,8 +339,21 @@ mod tests {
             name: "dup".to_string(),
             description: "Second".to_string(),
         });
-        registry.register(tool1);
-        registry.register(tool2); // should panic
+        registry.register(tool1, 0).unwrap();
+        let result = registry.register(tool2, 5);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ToolConflictError::DuplicateTool {
+                name,
+                existing_priority,
+                new_priority,
+            } => {
+                assert_eq!(name, "dup");
+                assert_eq!(existing_priority, 0);
+                assert_eq!(new_priority, 5);
+            }
+            _ => panic!("expected DuplicateTool error"),
+        }
     }
 
     #[test]
@@ -266,7 +363,7 @@ mod tests {
             name: "echo".to_string(),
             description: "Echoes input".to_string(),
         });
-        registry.register(tool);
+        registry.register(tool, 0).unwrap();
 
         let tools = registry.list_tools();
         assert_eq!(tools.len(), 1);
@@ -280,6 +377,36 @@ mod tests {
     fn test_registry_lookup_unknown() {
         let registry = ToolRegistry::new();
         assert!(registry.get_by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_registry_get_priority() {
+        let registry = ToolRegistry::new();
+        let tool = Arc::new(EchoTool {
+            name: "echo".to_string(),
+            description: "Echoes input".to_string(),
+        });
+        registry.register(tool, 42).unwrap();
+        assert_eq!(registry.get_priority("echo"), Some(42));
+        assert_eq!(registry.get_priority("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_tool_lookup_trait_impl() {
+        let registry = ToolRegistry::new();
+        let tool = Arc::new(EchoTool {
+            name: "echo".to_string(),
+            description: "Echoes input".to_string(),
+        });
+        registry.register(tool, 0).unwrap();
+
+        let result = registry.lookup_by_name("echo");
+        assert!(result.is_some());
+        let (_id, def) = result.unwrap();
+        assert_eq!(def.name, "echo");
+        assert_eq!(def.description, "Echoes input");
+
+        assert!(registry.lookup_by_name("nonexistent").is_none());
     }
 
     #[tokio::test]

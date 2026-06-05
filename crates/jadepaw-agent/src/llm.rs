@@ -101,6 +101,56 @@ pub fn build_initial_messages(
     vec![system_msg, user_msg]
 }
 
+/// Augment the system prompt with skill context and tool descriptions.
+///
+/// When a skill context block is present, it is injected between the base
+/// prompt and tool descriptions. When there are no skills but tools are
+/// registered, delegates to `build_system_prompt_with_tools`. When both
+/// are empty, returns the base prompt unchanged (D-02, D-03).
+pub fn build_skill_augmented_prompt(
+    base_prompt: &str,
+    skill_context_block: &str,
+    tools: &[ToolDefinition],
+) -> String {
+    match (skill_context_block.is_empty(), tools.is_empty()) {
+        (true, true) => base_prompt.to_string(),
+        (true, false) => build_system_prompt_with_tools(base_prompt, tools),
+        (false, _) => {
+            let tool_descriptions: Vec<String> = tools
+                .iter()
+                .map(|t| {
+                    format!(
+                        "- {}: {}\n  Parameters: {}",
+                        t.name,
+                        t.description,
+                        serde_json::to_string(&t.input_schema).unwrap_or_else(|e| {
+                            tracing::warn!(tool = %t.name, error = %e,
+                                "failed to serialize tool input_schema for prompt injection");
+                            format!("\"<serialization error: {}>\"", e)
+                        })
+                    )
+                })
+                .collect();
+
+            let tools_section = if tools.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n\nAvailable tools:\n{}\n\nWhen calling a tool, use the exact tool name and provide parameters as a JSON object.",
+                    tool_descriptions.join("\n")
+                )
+            };
+
+            format!(
+                "{}\n\n{}{}",
+                base_prompt,
+                skill_context_block,
+                tools_section,
+            )
+        }
+    }
+}
+
 /// Augment the system prompt with available tool descriptions.
 ///
 /// Tools are injected in MCP tools/list format so the LLM knows what

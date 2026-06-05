@@ -14,15 +14,20 @@
 //! - Full LLM response is emitted as a single `ReActStep::Thought` per turn
 
 use std::fmt;
+use std::sync::Arc;
 
 use anyhow::Context;
 use async_openai::{
-    types::chat::{ChatCompletionRequestMessage, ChatCompletionRequestUserMessage},
+    types::chat::{
+        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+        ChatCompletionRequestUserMessage,
+    },
     Client,
     config::Config,
 };
 use jadepaw_core::{ReActStep, SessionId, TenantId};
 use jadepaw_db::{SessionRepository, SessionSnapshot, SessionStatus};
+use jadepaw_skill::SkillManager;
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
 
@@ -136,6 +141,7 @@ pub async fn react_loop(
     context: Option<&str>,
     tx: &mpsc::Sender<ReActStep>,
     tool_registry: &ToolRegistry,
+    skill_manager: Option<Arc<SkillManager>>,
     // Session persistence (MEM-02)
     session_repo: Option<&dyn SessionRepository>,
     session_id: SessionId,
@@ -183,6 +189,25 @@ pub async fn react_loop(
                 "context window compressed (recent_n={})",
                 recent_n
             );
+        }
+
+        // Check for pending skill swap (D-07).
+        // Called AFTER context compression and BEFORE the LLM call so that
+        // skill changes are visible on the very next turn. The swap is
+        // consumed atomically — subsequent calls return None until a new
+        // swap is set.
+        if let Some(ref sm) = skill_manager {
+            if let Some(skill_swap) = sm.check_pending_swap(tenant_id) {
+                tracing::info!(
+                    session_id = %session_id,
+                    turn = turn,
+                    "applied pending skill swap"
+                );
+                messages[0] = ChatCompletionRequestSystemMessage::from(
+                    skill_swap.new_system_prompt,
+                )
+                .into();
+            }
         }
 
         // Stream LLM response — accumulates full text without per-token events

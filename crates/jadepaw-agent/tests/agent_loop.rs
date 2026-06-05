@@ -72,6 +72,7 @@ async fn run_agent_returns_structured_response() {
         client,
         "gpt-4",
         None,
+        None,
     )
     .await;
     // Expected to fail (connection refused), but function signature must compile
