@@ -21,13 +21,15 @@ use async_openai::{
     Client,
     config::Config,
 };
-use jadepaw_core::ReActStep;
+use jadepaw_core::{ReActStep, SessionId, TenantId};
+use jadepaw_db::{SessionRepository, SessionSnapshot, SessionStatus};
 use jadepaw_wasm::SessionHandle;
 use tokio::sync::mpsc;
 
 use crate::guard::GuardConfig;
 use crate::llm::{self, LlmDirective};
 use crate::tool_registry::ToolRegistry;
+use crate::window;
 
 /// Structured error kind for the ReAct loop.
 ///
@@ -134,21 +136,29 @@ pub async fn react_loop(
     context: Option<&str>,
     tx: &mpsc::Sender<ReActStep>,
     tool_registry: &ToolRegistry,
+    // Session persistence (MEM-02)
+    session_repo: Option<&dyn SessionRepository>,
+    session_id: SessionId,
+    tenant_id: TenantId,
+    // Resume state
+    pre_existing_messages: Vec<ChatCompletionRequestMessage>,
+    pre_existing_trace: Vec<ReActStep>,
+    elapsed_accumulator_ms: u64,
+    start_turn: u32,
+    session_created_at: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<Vec<ReActStep>> {
-    let mut trace: Vec<ReActStep> = Vec::new();
+    let start = tokio::time::Instant::now();
+    let mut trace: Vec<ReActStep> = pre_existing_trace;
 
-    // Build initial messages
+    // Build initial messages, or use pre-existing messages from a resumed session.
     let mut messages: Vec<ChatCompletionRequestMessage> =
-        llm::build_initial_messages(system_prompt, user_message, context);
+        if pre_existing_messages.is_empty() {
+            llm::build_initial_messages(system_prompt, user_message, context)
+        } else {
+            pre_existing_messages
+        };
 
-    // TODO(WR-04): Implement message windowing to prevent unbounded context
-    // growth. Each ReAct turn adds 2 messages (observation + assistant response),
-    // and at max_iterations=20 the history reaches ~42 messages. Future work:
-    // - Sliding window: keep system + user + last N turns
-    // - Summarization: periodically condense older turns into a summary
-    // - Token counting: trim when approaching the model's context limit
-
-    for turn in 0..guard_config.max_iterations {
+    for turn in start_turn..guard_config.max_iterations {
         // Per-turn fuel reset (D-10 Pitfall 3)
         session
             .store_mut()
@@ -159,6 +169,21 @@ pub async fn react_loop(
                     source: anyhow::anyhow!("failed to set fuel on session store: {}", e),
                 })
             })?;
+
+        // Token count check + context window compression (MEM-01, D-02b).
+        // Runs synchronously before each LLM call; ~10ms CPU overhead,
+        // negligible vs LLM latency.
+        let should_window = window::should_compress(&messages, model);
+        if should_window {
+            let recent_n = guard_config.recent_turns();
+            messages = window::compress_context(messages, model, recent_n);
+            tracing::info!(
+                turn = turn,
+                session_id = %session_id,
+                "context window compressed (recent_n={})",
+                recent_n
+            );
+        }
 
         // Stream LLM response — accumulates full text without per-token events
         let full_response = llm::stream_llm_response(
@@ -280,6 +305,47 @@ pub async fn react_loop(
                     )
                     .into();
                 messages.push(assistant_msg);
+            }
+        }
+
+        // Persist turn-boundary checkpoint (MEM-02, D-06).
+        // Full-state snapshot after each completed think-act-observe cycle.
+        // The Wasm Store is never serialized (D-06a) — only conversational
+        // state is persisted. On resume, a fresh Store is created from
+        // InstancePre.
+        if let Some(repo) = session_repo {
+            let elapsed = elapsed_accumulator_ms
+                + start.elapsed().as_millis() as u64;
+            let snapshot = SessionSnapshot {
+                session_id,
+                tenant_id,
+                status: SessionStatus::Running,
+                messages_json: serde_json::to_string(&messages).unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "failed to serialize messages for checkpoint");
+                    "[]".to_string()
+                }),
+                trace_json: serde_json::to_string(&trace).unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "failed to serialize trace for checkpoint");
+                    "[]".to_string()
+                }),
+                guard_config_json: serde_json::to_string(guard_config).unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "failed to serialize guard config for checkpoint");
+                    "{}".to_string()
+                }),
+                elapsed_ms: elapsed,
+                iteration_count: turn + 1,
+                created_at: session_created_at,
+                updated_at: chrono::Utc::now(),
+                termination_reason_json: None,
+            };
+            // Checkpoint failure is logged but NOT fatal — agent loop continues.
+            if let Err(e) = repo.save(session_id, tenant_id, snapshot).await {
+                tracing::error!(
+                    error = %e,
+                    session_id = %session_id,
+                    turn = turn,
+                    "failed to persist turn-boundary checkpoint"
+                );
             }
         }
     }
