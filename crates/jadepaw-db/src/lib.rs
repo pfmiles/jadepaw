@@ -24,3 +24,4 @@ pub mod sqlite_repo;
 
 pub use models::{SessionSnapshot, SessionStatus, SessionSummary};
 pub use repository::SessionRepository;
+pub use sqlite_repo::SqliteSessionRepo;
