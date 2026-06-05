@@ -107,8 +107,10 @@ pub fn skill_routes() -> Router<SkillApiState> {
 ///
 /// # Security (T-06-10)
 ///
-/// skill_name is validated as kebab-case by parse_skill_file() before any
-/// path construction. The path is built from sanitized components.
+/// The skill_name is validated during parse_skill_file() inside
+/// SkillManager::load(). Path traversal is prevented by the fact that
+/// the constructed path is rooted at `<skills_root>/<tenant_id>/`, and
+/// `load()` rejects names that fail kebab-case validation after parsing.
 async fn load_skill(
     State(state): State<SkillApiState>,
     Json(req): Json<LoadSkillRequest>,
@@ -230,13 +232,26 @@ async fn list_skills(
 /// # Security (T-06-10)
 ///
 /// Path: `<skills_root>/<tenant_id>/<skill_name>/SKILL.md`. The skill_name
-/// is validated by parse_skill_file() before filesystem access. The tenant_id
-/// directory provides multi-tenant isolation (T-06-11).
+/// is validated BEFORE any filesystem access to prevent path traversal.
+/// The tenant_id directory provides multi-tenant isolation (T-06-11).
 async fn inspect_skill(
     State(state): State<SkillApiState>,
     Path(name): Path<String>,
     Query(query): Query<ListSkillsQuery>,
 ) -> Response {
+    // Validate skill_name BEFORE any filesystem access to prevent path
+    // traversal attacks where name="../" could escape the skills_root.
+    if let Err(validation_err) = jadepaw_skill::validate_skill_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SkillErrorResponse {
+                field: "skill_name".to_string(),
+                reason: format!("{:?}", validation_err),
+            }),
+        )
+            .into_response();
+    }
+
     // Build the file path from the skills_root (via skill_manager's skills_root)
     let skills_root = &state.skill_manager.skills_root;
     let file_path = skills_root
