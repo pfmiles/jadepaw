@@ -615,7 +615,7 @@ fn build_skill_context_block(
 | A5 | ToolRegistry's DashMap mutation from `register()` returning `Result` instead of panicking does not affect existing callers | Architecture Patterns | Medium -- existing callers in Phase 3/4 tests may need updating if they rely on `register()` returning `ToolId` directly |
 | A6 | SQLite `skill_index` table can reuse the same connection pool pattern as `SessionRepository` | Architecture Patterns | Low -- both tables are in the same SQLite database; same pool, same WAL mode |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **gray_matter YAML error granularity for user-facing validation**
    - What we know: gray_matter uses yaml-rust2 under the hood. yaml-rust2's `ScanError` carries `Marker` with line/column info. gray_matter wraps this.
