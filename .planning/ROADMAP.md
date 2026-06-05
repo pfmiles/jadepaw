@@ -12,7 +12,7 @@
 - [x] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards (completed 2026-06-01)
 - [x] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools (completed 2026-06-03)
 - [x] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence (completed 2026-06-05)
-- [ ] **Phase 6: Skill System** — Declarative SKILL.md format with hot loading and runtime swapping
+- [x] **Phase 6: Skill System** — Declarative SKILL.md format with hot loading and runtime swapping (completed 2026-06-05)
 - [ ] **Phase 7: Web Chat UI** — Browser-based streaming chat interface via HTMX + SSE
 - [ ] **Phase 8: Skill Management UI** — Web interface for listing, loading, and unloading skills
 - [ ] **Phase 9: Observability** — Session-correlated tracing and Prometheus metrics
@@ -161,7 +161,7 @@ Plans:
   4. A SKILL.md file with invalid YAML frontmatter is rejected at load time with a clear error message indicating the parse failure location
   5. Multiple skills can be loaded simultaneously and the agent correctly merges their tool declarations and instruction contexts
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 
@@ -172,7 +172,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
+- [x] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
 
 
 ### Phase 7: Web Chat UI
@@ -196,7 +196,7 @@ Plans:
 **Wave 1**
 
 - [x] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
-- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+- [x] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -224,7 +224,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [x] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
 - [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -270,7 +270,7 @@ Plans:
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
 | 4. Tool System | 3/3 | Complete    | 2026-06-03 |
 | 5. Session Memory | 2/2 | Complete    | 2026-06-05 |
-| 6. Skill System | 2/3 | In Progress|  |
+| 6. Skill System | 3/3 | Complete   | 2026-06-05 |
 | 7. Web Chat UI | 0/? | Not started | — |
 | 8. Skill Management UI | 0/? | Not started | — |
 | 9. Observability | 0/? | Not started | — |
