@@ -81,7 +81,12 @@ impl SessionRepository for SqliteSessionRepo {
         tenant_id: TenantId,
         snapshot: SessionSnapshot,
     ) -> Result<()> {
-        sqlx::query(
+        // Use ON CONFLICT with a WHERE clause on tenant_id to prevent
+        // cross-tenant data overwrite when session_id collides (defense in
+        // depth — UUID collisions are cryptographically infeasible, but the
+        // entire codebase enforces dual-key isolation at every other call
+        // site; the persistence layer should not be the exception).
+        let result = sqlx::query(
             "INSERT INTO sessions (session_id, tenant_id, status, messages_json, trace_json,
              guard_config_json, elapsed_ms, iteration_count, created_at, updated_at, termination_reason_json)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -93,7 +98,8 @@ impl SessionRepository for SqliteSessionRepo {
                elapsed_ms = excluded.elapsed_ms,
                iteration_count = excluded.iteration_count,
                updated_at = excluded.updated_at,
-               termination_reason_json = excluded.termination_reason_json",
+               termination_reason_json = excluded.termination_reason_json
+             WHERE tenant_id = excluded.tenant_id",
         )
         .bind(session_id.as_bytes().as_slice())
         .bind(tenant_id.as_bytes().as_slice())
@@ -109,6 +115,16 @@ impl SessionRepository for SqliteSessionRepo {
         .execute(&self.pool)
         .await
         .context("failed to save session")?;
+
+        // If the upsert's WHERE clause excluded the row (tenant_id mismatch),
+        // rows_affected() returns 0. This is a cross-tenant collision —
+        // session_id exists under a different tenant. Surface as error.
+        if result.rows_affected() == 0 {
+            anyhow::bail!(
+                "cross-tenant session_id collision: session {} exists under a different tenant",
+                session_id
+            );
+        }
         Ok(())
     }
 
