@@ -10,7 +10,7 @@
 //!   for message history, trace, and configuration.
 //! - `SessionSummary` is a lightweight subset (no blob columns) used for listing.
 
-use jadepaw_core::{SessionId, TenantId};
+use jadepaw_core::{AgentTerminationReason, SessionId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -94,8 +94,7 @@ pub struct SessionSummary {
     /// Last update timestamp.
     pub updated_at: chrono::DateTime<chrono::Utc>,
     /// How the session ended, if applicable.
-    /// Stored as string to avoid requiring Serialize/Deserialize on AgentTerminationReason.
-    pub termination_reason: Option<String>,
+    pub termination_reason: Option<AgentTerminationReason>,
     /// Approximate count of messages in the conversation.
     pub message_count: usize,
     /// Number of ReAct turns completed.

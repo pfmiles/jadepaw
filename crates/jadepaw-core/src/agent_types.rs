@@ -111,7 +111,7 @@ pub enum ReActStep {
 ///
 /// Note: time values use u64 (seconds) instead of `std::time::Duration` to
 /// maintain `PartialEq`/`Eq` derive compatibility.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentTerminationReason {
     /// The agent exceeded the maximum number of ReAct iterations.
     MaxIterationsReached {

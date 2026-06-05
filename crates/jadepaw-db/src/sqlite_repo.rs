@@ -270,7 +270,10 @@ impl SessionRepository for SqliteSessionRepo {
                 .with_timezone(&chrono::Utc);
 
             let termination_reason_json: Option<String> = row.get("termination_reason_json");
-            let termination_reason = termination_reason_json;
+            let termination_reason = match termination_reason_json {
+                Some(ref s) => serde_json::from_str(s).ok(),
+                None => None,
+            };
 
             summaries.push(SessionSummary {
                 session_id: s_id,
