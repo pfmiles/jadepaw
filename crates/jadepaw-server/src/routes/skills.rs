@@ -135,8 +135,9 @@ async fn load_skill(
                 error = %e,
                 "failed to load skill"
             );
+            let status = classify_skill_error_status(&e);
             (
-                StatusCode::BAD_REQUEST,
+                status,
                 Json(SkillErrorResponse {
                     field: req.skill_name.clone(),
                     reason: format!("{:?}", e),
@@ -175,8 +176,9 @@ async fn unload_skill(
                 error = %e,
                 "failed to unload skill"
             );
+            let status = classify_skill_error_status(&e);
             (
-                StatusCode::BAD_REQUEST,
+                status,
                 Json(SkillErrorResponse {
                     field: req.skill_name.clone(),
                     reason: format!("{:?}", e),
@@ -184,6 +186,26 @@ async fn unload_skill(
             )
                 .into_response()
         }
+    }
+}
+
+/// Classify a `SkillValidationError` into the appropriate HTTP status code.
+///
+/// Validation and parse errors are client faults (400), while unexpected
+/// or I/O-related errors are server faults (500).
+fn classify_skill_error_status(e: &jadepaw_core::SkillValidationError) -> StatusCode {
+    use jadepaw_core::SkillValidationError;
+    match e {
+        SkillValidationError::ParseError { .. }
+        | SkillValidationError::MissingField { .. }
+        | SkillValidationError::InvalidName { .. }
+        | SkillValidationError::FieldTooLong { .. }
+        | SkillValidationError::NameDirectoryMismatch { .. }
+        | SkillValidationError::ToolNotFound { .. }
+        | SkillValidationError::MissingFrontmatter { .. } => StatusCode::BAD_REQUEST,
+        // Future variants that represent server-side issues map to 500.
+        #[allow(unreachable_patterns)]
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
