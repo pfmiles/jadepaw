@@ -203,10 +203,30 @@ pub async fn react_loop(
                     turn = turn,
                     "applied pending skill swap"
                 );
-                messages[0] = ChatCompletionRequestSystemMessage::from(
-                    skill_swap.new_system_prompt,
-                )
-                .into();
+                // Reconstruct the full augmented system prompt from the
+                // skill block and merged tool list. The SkillSwap stores
+                // the XML skill block separately; react_loop recombines it
+                // with the base ReAct prompt and tool descriptions so the
+                // LLM never loses the ReAct format instructions.
+                let tool_defs = &skill_swap.merged_tool_list;
+                let full_prompt = if skill_swap.new_system_prompt.is_empty() {
+                    if tool_defs.is_empty() {
+                        llm::REACT_SYSTEM_PROMPT.to_string()
+                    } else {
+                        llm::build_system_prompt_with_tools(
+                            llm::REACT_SYSTEM_PROMPT,
+                            tool_defs,
+                        )
+                    }
+                } else {
+                    llm::build_skill_augmented_prompt(
+                        llm::REACT_SYSTEM_PROMPT,
+                        &skill_swap.new_system_prompt,
+                        tool_defs,
+                    )
+                };
+                messages[0] =
+                    ChatCompletionRequestSystemMessage::from(full_prompt).into();
             }
         }
 
