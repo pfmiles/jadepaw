@@ -18,18 +18,18 @@
 //! - Agent loop or LLM client (see jadepaw-agent)
 //! - Core data types (see jadepaw-core)
 
+pub mod index;
 pub mod injector;
+pub mod loader;
 pub mod manager;
 pub mod manifest;
 pub mod parser;
 pub mod registry;
 pub mod validation;
 
-// Future modules (activated in subsequent plans):
-// pub mod loader;
-// pub mod index;
-
+pub use index::SkillIndex;
 pub use injector::build_skill_context_block;
+pub use loader::{SkillFileEntry, SkillLoader};
 pub use manager::SkillManager;
 pub use manifest::SkillManifest;
 pub use parser::parse_skill_file;

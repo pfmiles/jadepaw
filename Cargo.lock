@@ -1573,14 +1573,19 @@ dependencies = [
 name = "jadepaw-skill"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "dashmap",
  "gray_matter",
  "jadepaw-core",
+ "jadepaw-db",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]
