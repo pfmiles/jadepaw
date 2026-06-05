@@ -1,6 +1,6 @@
 ---
 phase: 05-session-memory
-reviewed: 2026-06-05T18:00:00Z
+reviewed: 2026-06-05T20:00:00Z
 depth: standard
 files_reviewed: 16
 files_reviewed_list:
@@ -21,14 +21,14 @@ files_reviewed_list:
   - crates/jadepaw-db/src/repository.rs
   - crates/jadepaw-db/src/sqlite_repo.rs
 findings:
-  critical: 2
+  critical: 1
   warning: 3
-  info: 3
-  total: 8
+  info: 2
+  total: 6
 status: issues_found
 ---
 
-# Phase 05: Code Review Report (Adversarial Re-review)
+# Phase 05: Code Review Report (Adversarial Re-review #4)
 
 **Reviewed:** 2026-06-05
 **Depth:** standard
@@ -37,127 +37,109 @@ status: issues_found
 
 ## Summary
 
-This is the third adversarial re-review of the Phase 05 (session-memory) implementation. Two previous fix iterations addressed 15 findings total (7 Critical+Warning in iteration 1, 2 Warning+5 Info in iteration 2, and a further 2 Warning in iteration 3). The code has steadily improved and is approaching production quality.
+This is the fourth adversarial re-review of Phase 05 (session-memory). Three previous fix iterations addressed 15 out of 15 Critical+Warning findings. The current code is in good shape — all prior Critical and Warning items have been properly remediated.
 
-This review identifies 2 new Critical findings (one correctness bug in test infrastructure, one data integrity issue in persistence) and 3 new Warnings (inconsistent integer truncation patterns, overflow risk in elapsed time computation, missing guard config validation). Three existing Info items are reaffirmed.
+This review finds 1 new Critical issue (a silently wrapping integer cast on the DB read path, sibling to the previously-fixed WR-02), 3 Warnings (2 carry-over Info items now upgraded due to real-world impact, plus 1 new config validation gap), and 2 Info items. The overall quality is approaching production-ready.
 
 ## Critical Issues
 
-### CR-01: In-memory SQLite URI is a file-path, not an in-memory database
+### CR-01: `iteration_count as u32` silently wraps negative values into large positive u32 on DB read path
 
-**File:** `crates/jadepaw-agent/tests/session_persistence.rs:32`
-**Issue:** The test helper `make_repo()` creates a SQLite database with `SqliteSessionRepo::new("sqlite://:memory:")`. In SQLx's URI parser, `"sqlite://:memory:"` is interpreted as a file path: a file literally named `:memory:` in the current working directory. This means:
-1. Tests are not truly isolated — a database file named `:memory:` is created on disk and persists across test runs.
-2. Subsequent test runs may fail or produce incorrect results if the file from a prior run still exists.
-3. The database is not ephemeral, violating the explicit test design intent.
+**File:** `crates/jadepaw-db/src/sqlite_repo.rs:202`
+**Issue:** The `load()` function reads `iteration_count` from SQLite as `i32` (line 179: `let iteration_count: i32 = row.get("iteration_count")`) and then unconditionally casts to `u32` at line 202: `iteration_count: iteration_count as u32`. This is the exact same anti-pattern that was previously flagged as WR-02 for `elapsed_ms as u64` at the same function (line 200, now fixed with `try_from`). The previous fix only addressed `elapsed_ms` but overlooked the identical problem with `iteration_count` at the adjacent line.
 
-The correct SQLx URI for an in-memory SQLite database is `"sqlite::memory:"` (note the double colon) or `":memory:"` (bare). The `SqliteConnectOptions::from_str("sqlite://:memory:")` call in `SqliteSessionRepo::new()` treats the path component as a filesystem path, not as the SQLite `:memory:` special name.
+If a negative value enters the database (via data corruption, manual manipulation, or a future migration bug), the `as u32` cast would silently produce an enormous positive number. For example, `-1_i32 as u32 = 4294967295`. When `resume_session` then uses this as `start_turn`, the agent loop range `start_turn..max_iterations` would be empty (since `start_turn >> max_iterations`), causing the agent to immediately terminate with a `MaxIterationsReached` error — but the error context would report a nonsensical iteration count.
+
+The codebase's own defense-in-depth pattern (applied at lines 200-201 for `elapsed_ms`) should be replicated here.
 
 **Fix:**
 ```rust
-async fn make_repo() -> SqliteSessionRepo {
-    SqliteSessionRepo::new("sqlite::memory:")
-        .await
-        .expect("failed to create in-memory SQLite repo")
-}
-```
-
-### CR-02: Elapsed time uses `as u64` narrowing cast on `u128`, silently truncating on overflow
-
-**File:** `crates/jadepaw-agent/src/loop.rs:318`
-**Issue:** The `react_loop` function computes elapsed time for persisting checkpoints:
-```rust
-let elapsed = elapsed_accumulator_ms
-    + start.elapsed().as_millis() as u64;
-```
-`Instant::elapsed().as_millis()` returns `u128`. The `as u64` cast silently truncates the upper 64 bits on overflow. While the practical likelihood is low (a u64 of milliseconds is ~584 million years), the same codebase in `guard.rs:149-150` correctly uses `u64::try_from(...).unwrap_or(u64::MAX)`, establishing an inconsistency:
-```rust
-// guard.rs:149 (correct approach)
-let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-```
-This inconsistency between two time-computation sites in the same crate creates a maintenance hazard — if a developer copies the buggy pattern from `loop.rs`, they may introduce a silently incorrect computation in a more sensitive path.
-
-**Fix:** Apply the same `try_from` pattern used in `guard.rs`:
-```rust
-let elapsed = elapsed_accumulator_ms
-    + u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+// Line 202, replace:
+iteration_count: iteration_count as u32,
+// with:
+iteration_count: u32::try_from(iteration_count)
+    .context("iteration_count is negative or exceeds u32")?,
 ```
 
 ## Warnings
 
-### WR-01: `iteration_count: turn + 1` unsigned overflow risk in guard-covered code paths
+### WR-01: `GuardConfig::validate()` allows `recent_turns = 0`, causing context loss on compression
 
-**File:** `crates/jadepaw-agent/src/loop.rs:342`
-**Issue:** The checkpoint snapshot uses `iteration_count: turn + 1`. Both `turn` and `iteration_count` are `u32`. The `turn` variable is bounded by the for loop range `start_turn..guard_config.max_iterations` where `max_iterations` is `u32`. If `max_iterations` equals `u32::MAX`, `turn + 1` would overflow to 0 on the last iteration. While `GuardConfig::default()` sets `max_iterations` to 20 and the serialize path ensures only valid values reach the DB, `GuardConfig` is deserialized from user input at runtime (`serde_json::from_str(&snapshot.guard_config_json)`) and no validation enforces reasonable bounds on `max_iterations`. A crafted guard config with `max_iterations: u32::MAX` would produce incorrect iteration counts in checkpoints.
+**File:** `crates/jadepaw-agent/src/guard.rs:57-68`
+**Issue:** The `validate()` method only checks `recent_turns > 100` but allows `recent_turns = 0`. When `recent_n = 0` reaches `compress_context`, `n_msgs_to_keep = 0`, meaning zero recent turns are preserved verbatim. The function strips all conversation body messages, keeping only the system prompt, the initial user message, and a summary of older messages. This effectively discards ALL recent conversation context, which can cause the LLM to lose the immediate conversational thread and produce incoherent responses.
 
-**Fix:** Use `saturating_add` or validate `max_iterations` at deserialization:
+The `validate()` function was added in the most recent fix commit specifically to prevent unreasonable config values deserialized from user input. A `recent_turns = 0` value is unreasonable — preserving zero turns makes the context window compression destructive rather than helpful.
+
+**Fix:**
 ```rust
-// In GuardConfig or its deserialization point:
-pub fn validate(&self) -> Result<(), &'static str> {
-    if self.max_iterations == 0 {
-        return Err("max_iterations must be positive");
-    }
-    if self.max_iterations > 1_000_000 {
-        return Err("max_iterations exceeds reasonable limit");
-    }
-    Ok(())
+// In guard.rs validate(), add a lower bound check:
+if self.recent_turns == 0 {
+    return Err("recent_turns must be at least 1");
+}
+if self.recent_turns > 100 {
+    return Err("recent_turns must not exceed 100");
 }
 ```
-Or at minimum, at the checkpoint site:
+
+### WR-02: `SessionSnapshot.termination_reason_json` is never populated — sessions always report no termination reason
+
+**File:** `crates/jadepaw-agent/src/loop.rs:345`, `crates/jadepaw-db/src/models.rs:77`
+**Issue:** (Previously IN-01 in two prior reviews; now upgraded to Warning due to confirmed data-loss impact on observability and debugging.) The `SessionSnapshot.termination_reason_json` field is defined in the data model, stored in the SQL schema, deserialized in `load()` and `list_by_tenant()` (into `SessionSummary.termination_reason`), but ALL write paths unconditionally set it to `None`:
+
+- `loop.rs:345`: `termination_reason_json: None` — the per-turn checkpoint never populates this.
+- There is no "final save" after loop termination that would write the termination reason.
+
+Concrete impact: `SessionSummary.termination_reason` is always `None` for every session in `list_by_tenant()`. This makes it impossible to distinguish sessions that ended normally from those terminated by a guard, and impossible to surface termination reasons in a session management UI. With a populated field, crash recovery (`mark_running_as_paused`) could also distinguish between expected and unexpected pauses.
+
+**Fix:** After `react_loop` returns (both success and error paths in `lib.rs` and `resume_session`), construct the appropriate `AgentTerminationReason`, serialize it via `serde_json::to_string`, and persist it via `repo.save()` or a dedicated final-status update.
+
+### WR-03: `GuardConfig.recent_turns` — redundant public field and public getter method cause ambiguity
+
+**File:** `crates/jadepaw-agent/src/guard.rs:32,48-50`
+**Issue:** (Previously IN-02 in prior reviews; now upgraded to Warning because the API surface ambiguity has concrete maintenance risk.) The field `pub recent_turns: u32` and method `pub fn recent_turns(&self) -> u32` are both public with the same name. In Rust, method resolution rules cause the method to shadow the field in method-call position — but field access via dot notation still resolves to the field. This dual-access pattern is error-prone: a developer writing `config.recent_turns` gets the field (which is mutable through `&mut self`), while `config.recent_turns()` calls the method. The two can diverge if any future logic is added to the getter, silently breaking callers that access the field directly.
+
+Having both also violates the principle of single-canonical-access. Either the field should be made private with the method as the sole accessor, or the redundant getter (which is a trivial pass-through) should be removed.
+
+**Fix:** Option A: Remove the method, keep the field public (simplest):
 ```rust
-iteration_count: turn.saturating_add(1),
+// Remove lines 46-50 (the recent_turns() method)
 ```
 
-### WR-02: SQLite BLOB-to-integer cast silently wraps negative values to large positive u64
-
-**File:** `crates/jadepaw-db/src/sqlite_repo.rs:178,200,250,288`
-**Issue:** The `load()` function reads `elapsed_ms` as `i64` from SQLite (line 178: `let elapsed_ms: i64 = row.get("elapsed_ms")`) then unconditionally casts to `u64` at line 200: `elapsed_ms: elapsed_ms as u64`. The same pattern repeats in `list_by_tenant()` (lines 250, 288). If a negative value were stored in the database (via manual manipulation, a bug in a future migration, or data corruption), this cast would silently produce a very large `u64` (e.g., `-1_i64 as u64 = 18446744073709551615`), resulting in the code believing sessions have been running for ~584 million years.
-
-While the Rust-side code never stores negative values (the model uses `u64` and the DB binding casts `u64 as i64`), defense in depth dictates that the read path should validate its invariants rather than silently producing garbage from corrupted data.
-
-**Fix:** Use `try_from` with an error or clamp:
+Option B: Make the field private, use `#[serde(default)]` or `#[serde(rename)]` to maintain serde compatibility:
 ```rust
-let elapsed_ms: i64 = row.get("elapsed_ms");
-let elapsed_ms = u64::try_from(elapsed_ms).context("elapsed_ms in database is negative or exceeds u64")?;
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GuardConfig {
+    pub max_iterations: u32,
+    pub wall_clock_timeout: Duration,
+    recent_turns: u32,  // made private
+}
+
+impl GuardConfig {
+    pub fn recent_turns(&self) -> u32 {
+        self.recent_turns
+    }
+}
 ```
-Or for `list_by_tenant()` where failing the entire query for one bad row may be undesirable:
-```rust
-let elapsed_ms: i64 = row.get("elapsed_ms");
-let elapsed_ms = u64::try_from(elapsed_ms).unwrap_or(0);
-```
-
-### WR-03: `created_at` remains `session_created_at` across all checkpoint saves, losing save-time semantics in `updated_at`
-
-**File:** `crates/jadepaw-agent/src/loop.rs:343`
-**Issue:** The checkpoint snapshot constructed at each turn uses `created_at: session_created_at` — the timestamp from when the session was initially created. The `updated_at` field is correctly set to `chrono::Utc::now()`. This is semantically correct: `created_at` should be invariant. However, the `save()` UPSERT in `sqlite_repo.rs:90-102` uses `ON CONFLICT(session_id) DO UPDATE SET ...` which does NOT update the `created_at` column. This means if the session is loaded from a previous checkpoint and re-saved, the original `created_at` is preserved — which is correct. No bug here, but worth documenting why this is intentional (the field name `created_at` makes it obvious, but the UPSERT does not set it, relying on the INSERT path only).
-
-This is acknowledged as not a bug but a documentation gap. No fix required.
 
 ## Info
 
-### IN-01: `SessionSnapshot.termination_reason_json` is never populated on write paths (recurring)
+### IN-01: `sqlx::query()` runtime API used instead of `sqlx::query!()` compile-time checked queries
 
-**File:** `crates/jadepaw-agent/src/loop.rs:345`, `crates/jadepaw-db/src/models.rs:77`
+**File:** `crates/jadepaw-db/src/sqlite_repo.rs` (throughout)
+**Issue:** All SQL queries use `sqlx::query()` — the runtime-only API that provides no compile-time type checking. The project's own CLAUDE.md recommends SQLx for "compile-time checked SQL" and "compile-time query checking." With `sqlx::query!()`, column name mismatches, type mismatches, and schema drift would be caught at compile time. The current approach defers all SQL errors to runtime.
 
-**Issue:** (Previously IN-03 in prior review, now IN-01). The `SessionSnapshot::termination_reason_json` field is defined in the data model, present in the SQL schema, and properly read back in `load()` and `list_by_tenant()`. However, all write paths set it to `None`. The field is never populated with an actual `AgentTerminationReason` when a session ends, meaning `SessionSummary::termination_reason` will always be `None` for all sessions.
+This is intentional for this codebase phase (sqlx::query!() requires the database to be reachable during compilation, which may not be practical for CI with in-memory SQLite), but documenting the trade-off is important for future maintainers.
 
-**Fix:** When the agent loop terminates (e.g., `react_loop` returns `Ok(trace)`) or the guard fires, construct the appropriate `AgentTerminationReason`, serialize it, and persist it in a final checkpoint.
+**Fix:** Consider migrating to `sqlx::query!()` with a compile-time accessible database (e.g., a test SQLite database checked into the repo, or using the `offline` feature with a prepared query data file).
 
-### IN-02: `GuardConfig.recent_turns` — redundant public field and public getter method
+### IN-02: `AgentRequest.resume_from` field is defined but never consumed by any logic path
 
-**File:** `crates/jadepaw-agent/src/guard.rs:32,48-50`
+**File:** `crates/jadepaw-core/src/agent_types.rs:37`
+**Issue:** The `resume_from: Option<SessionId>` field on `AgentRequest` is defined and serialized/deserialized, but no code path in `jadepaw-agent` or `jadepaw-db` reads this field. The decision between `run_agent` (fresh session) and `resume_session` (resumed session) is made by the caller (presumably `jadepaw-gateway`), not by inspecting this field. This creates a subtle API contract: the field is part of the request type but is advisory — the actual routing decision happens at a higher level.
 
-**Issue:** (Previously IN-02 in prior review). The field `pub recent_turns: u32` (line 32) and the method `pub fn recent_turns(&self) -> u32` (line 48) are both public with the same name. The method shadows the field in method-call position due to Rust's resolution rules. Having both is redundant and confusing.
+This is not a bug (the field could be consumed by jadepaw-gateway in a future phase), but it is dead code within the reviewed crate boundary. If `resume_from` is truly a gateway concern, it should live in the gateway's request types rather than in `jadepaw-core`.
 
-**Fix:** Remove the method (keep field access since `serde` can use private fields for deserialization) or make the field private and keep the method for proper encapsulation.
-
-### IN-03: `elapsed_ms` grows monotonically on each turn, but the accumulator is never bounded
-
-**File:** `crates/jadepaw-agent/src/loop.rs:317-318`
-
-**Issue:** The checkpoint `elapsed_ms` is computed as `elapsed_accumulator_ms + start.elapsed().as_millis()`. With `elapsed_ms` declared as `u64` in the database model, extremely long-lived sessions (theoretical, given wall_clock_timeout defaults to 300s) could not overflow this. However, the `iteration_count` is stored as `i32` in SQLite (INTEGER column), and `elapsed_ms` as `i64`. Both have practical limits far above normal values, but the schema declares INTEGER without explicit size constraints, making the limits implicit.
-
-**Fix:** Document the practical upper bounds in the model comments, or add defensive checks in the checkpoint construction that cap values at the DB column's maximum representable value.
+**Fix:** Either wire `resume_from` into the agent dispatch logic (with proper validation), or move the field to the gateway layer's request type. If kept in core, add a doc comment clarifying that it is consumed by the gateway, not by `jadepaw-agent`.
 
 ---
 
