@@ -18,6 +18,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::Row;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -138,8 +139,6 @@ impl SessionRepository for SqliteSessionRepo {
             return Ok(None);
         };
 
-        use sqlx::Row;
-
         let session_id_blob: Vec<u8> = row.get("session_id");
         let s_id = SessionId::from(Uuid::from_slice(&session_id_blob).context("invalid session_id BLOB")?);
 
@@ -191,34 +190,150 @@ impl SessionRepository for SqliteSessionRepo {
 
     /// List all sessions for a tenant (summary-only, no blob columns).
     ///
-    /// Stub implementation — full implementation in Plan 05-02 Task 2.
-    async fn list_by_tenant(&self, _tenant_id: TenantId) -> Result<Vec<SessionSummary>> {
-        anyhow::bail!("not yet implemented: list_by_tenant");
+    /// Returns lightweight `SessionSummary` records excluding the large JSON blob
+    /// columns. `message_count` and `turn_count` are derived from the JSON blob
+    /// array lengths (parsed from the TEXT columns). Sessions are ordered by
+    /// `created_at` descending.
+    async fn list_by_tenant(&self, tenant_id: TenantId) -> Result<Vec<SessionSummary>> {
+        let rows = sqlx::query(
+            "SELECT session_id, tenant_id, status, messages_json, trace_json,
+             elapsed_ms, created_at, updated_at, termination_reason_json
+             FROM sessions
+             WHERE tenant_id = ?
+             ORDER BY created_at DESC",
+        )
+        .bind(tenant_id.as_bytes().as_slice())
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list sessions by tenant")?;
+
+        let mut summaries = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let session_id_bytes: Vec<u8> = row.get("session_id");
+            let s_id = SessionId::from(
+                Uuid::from_slice(&session_id_bytes).context("invalid session_id BLOB")?,
+            );
+
+            let tenant_id_bytes: Vec<u8> = row.get("tenant_id");
+            let t_id = TenantId::from(
+                Uuid::from_slice(&tenant_id_bytes).context("invalid tenant_id BLOB")?,
+            );
+
+            let status_str: String = row.get("status");
+            let status = match status_str.as_str() {
+                "idle" => SessionStatus::Idle,
+                "running" => SessionStatus::Running,
+                "paused" => SessionStatus::Paused,
+                "ended" => SessionStatus::Ended,
+                other => anyhow::bail!("unknown session status: {}", other),
+            };
+
+            let messages_json: String = row.get("messages_json");
+            let trace_json: String = row.get("trace_json");
+            let elapsed_ms: i64 = row.get("elapsed_ms");
+
+            // Derive message_count and turn_count from JSON blob array lengths.
+            let message_count: usize =
+                serde_json::from_str::<serde_json::Value>(&messages_json)
+                    .ok()
+                    .and_then(|v| v.as_array().map(|a| a.len()))
+                    .unwrap_or(0);
+            let turn_count: usize = serde_json::from_str::<serde_json::Value>(&trace_json)
+                .ok()
+                .and_then(|v| v.as_array().map(|a| a.len()))
+                .unwrap_or(0);
+
+            let created_at_str: String = row.get("created_at");
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .context("invalid created_at timestamp")?
+                .with_timezone(&chrono::Utc);
+
+            let updated_at_str: String = row.get("updated_at");
+            let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
+                .context("invalid updated_at timestamp")?
+                .with_timezone(&chrono::Utc);
+
+            let termination_reason_json: Option<String> = row.get("termination_reason_json");
+            let termination_reason = termination_reason_json;
+
+            summaries.push(SessionSummary {
+                session_id: s_id,
+                tenant_id: t_id,
+                status,
+                created_at,
+                updated_at,
+                termination_reason,
+                message_count,
+                turn_count,
+                elapsed_ms: elapsed_ms as u64,
+            });
+        }
+
+        Ok(summaries)
     }
 
     /// Delete a session by ID and tenant.
     ///
-    /// Stub implementation — full implementation in Plan 05-02 Task 2.
-    async fn delete(&self, _session_id: SessionId, _tenant_id: TenantId) -> Result<()> {
-        anyhow::bail!("not yet implemented: delete");
+    /// Idempotent: returns `Ok(())` even if no rows matched (the session does not
+    /// exist). Both `session_id` and `tenant_id` must match for the deletion.
+    async fn delete(&self, session_id: SessionId, tenant_id: TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE session_id = ? AND tenant_id = ?")
+            .bind(session_id.as_bytes().as_slice())
+            .bind(tenant_id.as_bytes().as_slice())
+            .execute(&self.pool)
+            .await
+            .context("failed to delete session")?;
+        Ok(())
     }
 
     /// Update the status of a session.
     ///
-    /// Stub implementation — full implementation in Plan 05-02 Task 2.
+    /// Both `session_id` and `tenant_id` must match. The DB CHECK constraint
+    /// enforces valid status values at the storage layer; Rust-level state
+    /// machine enforcement is handled by the caller.
     async fn update_status(
         &self,
-        _session_id: SessionId,
-        _tenant_id: TenantId,
-        _status: SessionStatus,
+        session_id: SessionId,
+        tenant_id: TenantId,
+        status: SessionStatus,
     ) -> Result<()> {
-        anyhow::bail!("not yet implemented: update_status");
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ? AND tenant_id = ?",
+        )
+        .bind(status.to_string())
+        .bind(&now)
+        .bind(session_id.as_bytes().as_slice())
+        .bind(tenant_id.as_bytes().as_slice())
+        .execute(&self.pool)
+        .await
+        .context("failed to update session status")?;
+        Ok(())
     }
 
-    /// Mark all running sessions as paused (crash recovery).
+    /// Mark all running sessions as paused (crash recovery, D-07).
     ///
-    /// Stub implementation — full implementation in Plan 05-02 Task 2.
+    /// Scans for sessions with `status = 'running'`, sets them to `'paused'`, and
+    /// returns the affected session IDs. Uses RETURNING to avoid a separate SELECT.
     async fn mark_running_as_paused(&self) -> Result<Vec<SessionId>> {
-        anyhow::bail!("not yet implemented: mark_running_as_paused");
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows = sqlx::query(
+            "UPDATE sessions SET status = 'paused', updated_at = ?
+             WHERE status = 'running'
+             RETURNING session_id",
+        )
+        .bind(&now)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to mark running sessions as paused")?;
+
+        let mut ids = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let raw: Vec<u8> = row.get("session_id");
+            let uid = Uuid::from_slice(&raw).context("invalid session_id BLOB in RETURNING")?;
+            ids.push(SessionId::from(uid));
+        }
+
+        Ok(ids)
     }
 }
