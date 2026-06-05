@@ -199,7 +199,8 @@ impl SessionRepository for SqliteSessionRepo {
             guard_config_json,
             elapsed_ms: u64::try_from(elapsed_ms)
                 .context("elapsed_ms is negative or exceeds u64")?,
-            iteration_count: iteration_count as u32,
+            iteration_count: u32::try_from(iteration_count)
+                .context("iteration_count is negative")?,
             created_at,
             updated_at,
             termination_reason_json,
