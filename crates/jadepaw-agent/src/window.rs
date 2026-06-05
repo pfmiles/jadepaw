@@ -134,9 +134,7 @@ pub fn compress_context(
     // Verify compression actually reduced the message list. If compression
     // is a no-op on message count (edge case at the exact boundary, e.g.
     // n_msgs_to_keep + 3 total where the old message count equals the new
-    // summary-injected count), apply aggressive fallback: summary + recent N
-    // turns only, dropping the original system prompt and user message to
-    // guarantee reduction.
+    // summary-injected count), apply aggressive fallback.
     if result.len() >= messages.len() {
         tracing::warn!(
             original_len = messages.len(),
@@ -144,15 +142,7 @@ pub fn compress_context(
             recent_n = recent_n,
             "compression did not reduce message count; applying aggressive fallback"
         );
-        let mut fallback = Vec::with_capacity(1 + recent_len);
-        fallback.push(summary_msg);
-        // Re-extract recent messages from the original body since `recent`
-        // was consumed above. We know `body.len() > n_msgs_to_keep` at this
-        // point (guarded above).
-        let body = &messages[2..];
-        let split = body.len().saturating_sub(n_msgs_to_keep);
-        fallback.extend(body[split..].iter().cloned());
-        return fallback;
+        return aggressive_fallback(&messages, summary_msg, n_msgs_to_keep);
     }
 
     // Verify token count actually decreased. If not, the model context
@@ -167,11 +157,29 @@ pub fn compress_context(
             recent_n = recent_n,
             "compression did not reduce token count; applying aggressive fallback"
         );
-        let mut fallback = Vec::with_capacity(1 + recent_len);
-        fallback.push(summary_msg);
-        let body = &messages[2..];
-        let split = body.len().saturating_sub(n_msgs_to_keep);
-        fallback.extend(body[split..].iter().cloned());
+        let fallback = aggressive_fallback(&messages, summary_msg, n_msgs_to_keep);
+
+        // Verify the fallback actually reduces tokens. If even the aggressive
+        // fallback cannot compress (theoretically possible if recent N turns
+        // contain enormous tool outputs), drop the summary to guarantee
+        // progress and return only the most recent N turns.
+        let fallback_tokens = count_tokens(&fallback, model);
+        if fallback_tokens >= original_tokens {
+            tracing::warn!(
+                original_tokens = original_tokens,
+                fallback_tokens = fallback_tokens,
+                recent_n = recent_n,
+                "aggressive fallback did not reduce token count; returning minimal truncation"
+            );
+            let body = &messages[2..];
+            let split = body.len().saturating_sub(n_msgs_to_keep);
+            let mut minimal = Vec::with_capacity(1 + body.len() - split);
+            // Preserve original system prompt so the LLM retains tool
+            // definitions and ReAct instructions.
+            minimal.push(messages[0].clone());
+            minimal.extend(body[split..].iter().cloned());
+            return minimal;
+        }
         return fallback;
     }
 
@@ -205,6 +213,30 @@ fn model_context_window(model: &str) -> usize {
     }
 }
 
+/// Construct an aggressive fallback message list when normal compression
+/// fails to reduce message count or token count.
+///
+/// Preserves the original system prompt (`messages[0]`) so the LLM retains
+/// tool definitions and ReAct format instructions, injects the summary
+/// message, and keeps only the most recent N turns. This is used by both
+/// the message-count and token-count verification paths in `compress_context`.
+fn aggressive_fallback(
+    messages: &[ChatCompletionRequestMessage],
+    summary_msg: ChatCompletionRequestMessage,
+    n_msgs_to_keep: usize,
+) -> Vec<ChatCompletionRequestMessage> {
+    let body = &messages[2..];
+    let split = body.len().saturating_sub(n_msgs_to_keep);
+    let mut fallback = Vec::with_capacity(2 + body.len() - split);
+    // Preserve original system prompt (contains tool definitions and
+    // ReAct format instructions that the LLM requires to function).
+    fallback.push(messages[0].clone());
+    // Inject the compression summary so the LLM is aware of earlier context.
+    fallback.push(summary_msg);
+    fallback.extend(body[split..].iter().cloned());
+    fallback
+}
+
 /// Build a lightweight summary from older conversation messages.
 ///
 /// Extracts key information: tool names used, error status, approximate
@@ -217,12 +249,11 @@ fn build_summary(messages: &[ChatCompletionRequestMessage]) -> String {
         .count();
     let assistant_count = messages
         .iter()
-        .filter(|m| {
-            matches!(
-                m,
-                ChatCompletionRequestMessage::Assistant(_) | ChatCompletionRequestMessage::System(_)
-            )
-        })
+        .filter(|m| matches!(m, ChatCompletionRequestMessage::Assistant(_)))
+        .count();
+    let system_count = messages
+        .iter()
+        .filter(|m| matches!(m, ChatCompletionRequestMessage::System(_)))
         .count();
 
     // Extract tool-related information from user observation messages.
@@ -271,11 +302,18 @@ fn build_summary(messages: &[ChatCompletionRequestMessage]) -> String {
         ""
     };
 
+    let role_breakdown = if system_count > 0 {
+        format!(
+            " ({} user, {} assistant, {} system)",
+            user_count, assistant_count, system_count
+        )
+    } else {
+        format!(" ({} user, {} assistant)", user_count, assistant_count)
+    };
     format!(
-        "{} earlier messages ({} user, {} assistant).{}{}",
+        "{} earlier messages{}.{}{}",
         messages.len(),
-        user_count,
-        assistant_count,
+        role_breakdown,
         tool_summary,
         error_summary,
     )
