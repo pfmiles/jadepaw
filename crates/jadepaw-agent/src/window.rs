@@ -102,6 +102,12 @@ pub fn compress_context(
     model: &str,
     recent_n: u32,
 ) -> Vec<ChatCompletionRequestMessage> {
+    // Cannot meaningfully compress without at least a system prompt and
+    // user message. Returning as-is avoids indexing panics later.
+    if messages.len() < 2 {
+        return messages;
+    }
+
     let n_msgs_to_keep = (recent_n as usize).saturating_mul(2);
 
     // Need at least 3 more messages than we can keep for meaningful compression.
