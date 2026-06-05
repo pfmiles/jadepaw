@@ -22,4 +22,5 @@ pub mod models;
 pub mod repository;
 pub mod sqlite_repo;
 
-// Re-exports will be added in Task 2 when types are defined.
+pub use models::{SessionSnapshot, SessionStatus, SessionSummary};
+pub use repository::SessionRepository;
