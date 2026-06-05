@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 jadepaw-core = { path = "../jadepaw-core" }
 jadepaw-wasm = { path = "../jadepaw-wasm" }
+jadepaw-db = { path = "../jadepaw-db" }
 async-openai = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -16,7 +17,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
 anyhow = "1.0"
+chrono = { workspace = true }
 tracing = "0.1"
+tiktoken-rs = "0.12"
 
 [dev-dependencies]
 async-trait = "0.1"

@@ -25,6 +25,7 @@ pub mod llm;
 pub mod r#loop;
 pub mod stream;
 pub mod tool_registry;
+pub mod window;
 
 use std::convert::Infallible;
 use std::env::temp_dir;
@@ -34,8 +35,9 @@ use async_openai::Client;
 use async_openai::config::Config;
 use axum::response::sse::Event;
 use futures::stream::Stream;
-use jadepaw_core::{AgentRequest, AgentResponse, JadepawError, ReActStep};
+use jadepaw_core::{AgentRequest, AgentResponse, JadepawError, ReActStep, SessionId, TenantId};
 use jadepaw_wasm::{InstancePool, SessionState};
+use jadepaw_db::{self, SessionRepository, SessionStatus};
 
 /// Run an agent session from request to response with real-time SSE streaming.
 ///
@@ -104,7 +106,9 @@ pub async fn run_agent(
         llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
     };
 
-    // Run the agent loop under termination protection
+    // Run the agent loop under termination protection.
+    // Fresh sessions: no session_repo, empty pre-existing state, start at turn 0.
+    let session_created_at = chrono::Utc::now();
     let trace = guard::run_with_guard(&guard_config, || {
         r#loop::react_loop(
             &guard_config,
@@ -116,6 +120,14 @@ pub async fn run_agent(
             context,
             &tx,
             &registry,
+            None,                       // session_repo: no persistence for fresh sessions
+            session_id,
+            TenantId::default(),
+            vec![],                    // pre_existing_messages
+            vec![],                    // pre_existing_trace
+            0,                         // elapsed_accumulator_ms
+            0,                         // start_turn
+            session_created_at,
         )
     })
     .await;
@@ -157,6 +169,171 @@ pub async fn run_agent(
     ))
 }
 
+/// Resume a paused session from a database snapshot.
+///
+/// Loads the snapshot, reconstructs the ReAct loop state, acquires a fresh
+/// Wasm Store from InstancePool (D-06a: Stores are NOT serialized), and
+/// continues execution from the next turn.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The session cannot be found in the database
+/// - The snapshot cannot be deserialized
+/// - The fresh Wasm Store cannot be acquired
+/// - The agent loop fails
+pub async fn resume_session(
+    session_id: SessionId,
+    tenant_id: TenantId,
+    pool: Arc<InstancePool>,
+    llm_client: Client<Box<dyn Config>>,
+    model: &str,
+    repo: &dyn SessionRepository,
+    tool_registry: Option<Arc<ToolRegistry>>,
+) -> core::result::Result<
+    (
+        AgentResponse,
+        impl Stream<Item = core::result::Result<Event, Infallible>>,
+    ),
+    JadepawError,
+> {
+    // 1. Load snapshot from DB
+    let snapshot = repo
+        .load(session_id, tenant_id)
+        .await
+        .map_err(|e| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
+                    reason: format!("failed to load session: {}", e),
+                    turn: 0,
+                },
+            )
+        })?
+        .ok_or_else(|| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
+                    reason: format!("session not found: {}", session_id),
+                    turn: 0,
+                },
+            )
+        })?;
+
+    // 2. Deserialize conversational state from JSON blobs
+    let messages: Vec<async_openai::types::chat::ChatCompletionRequestMessage> =
+        serde_json::from_str(&snapshot.messages_json).map_err(|e| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
+                    reason: format!("failed to deserialize messages: {}", e),
+                    turn: 0,
+                },
+            )
+        })?;
+
+    let pre_trace: Vec<ReActStep> =
+        serde_json::from_str(&snapshot.trace_json).map_err(|e| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
+                    reason: format!("failed to deserialize trace: {}", e),
+                    turn: 0,
+                },
+            )
+        })?;
+
+    // 3. Deserialize guard config, fall back to default on parse failure
+    let guard_config: guard::GuardConfig =
+        serde_json::from_str(&snapshot.guard_config_json).unwrap_or_default();
+
+    // 4. Update status to Running before entering the loop
+    let _ = repo
+        .update_status(session_id, tenant_id, SessionStatus::Running)
+        .await;
+
+    // 5. Acquire fresh Wasm Store — D-06a: Stores are NOT serialized
+    let state = SessionState::with_defaults(temp_dir());
+    let mut handle = pool.acquire(session_id, state).await.map_err(|e| {
+        JadepawError::agent_terminated(
+            jadepaw_core::AgentTerminationReason::InfrastructureError {
+                reason: format!("failed to acquire session for resume: {}", e),
+                turn: 0,
+            },
+        )
+    })?;
+
+    // 6. Create SSE channel
+    let (tx, sse_stream) = stream::create_sse_channel();
+
+    let registry = tool_registry.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
+    let system_prompt = llm::REACT_SYSTEM_PROMPT;
+
+    // Augment system prompt with tool descriptions
+    let tool_definitions = registry.list_tools();
+    let augmented_prompt = if tool_definitions.is_empty() {
+        system_prompt.to_string()
+    } else {
+        llm::build_system_prompt_with_tools(system_prompt, &tool_definitions)
+    };
+
+    // 7. Run react_loop with pre-existing state, persisting at turn boundaries
+    let trace = guard::run_with_guard(&guard_config, || {
+        r#loop::react_loop(
+            &guard_config,
+            &mut handle,
+            &llm_client,
+            model,
+            &augmented_prompt,
+            "", // user_message: not used when pre_existing_messages is not empty
+            None, // context: already part of pre_existing_messages
+            &tx,
+            &registry,
+            Some(repo),                         // session_repo
+            session_id,
+            tenant_id,
+            messages,                           // pre_existing_messages
+            pre_trace,                          // pre_existing_trace
+            snapshot.elapsed_ms,                // elapsed_accumulator_ms
+            snapshot.iteration_count,           // start_turn
+            snapshot.created_at,                // session_created_at
+        )
+    })
+    .await;
+
+    // Drop the sender so the SSE stream knows we're done.
+    drop(tx);
+
+    let trace = trace?;
+
+    // 8. Update status to Ended
+    let _ = repo
+        .update_status(session_id, tenant_id, SessionStatus::Ended)
+        .await;
+
+    // Extract the final answer
+    let final_answer = trace
+        .iter()
+        .rev()
+        .find_map(|step| match step {
+            ReActStep::Finished { answer } => Some(answer.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            JadepawError::agent_terminated(
+                jadepaw_core::AgentTerminationReason::InfrastructureError {
+                    reason: "agent completed without producing a final answer".to_string(),
+                    turn: 0,
+                },
+            )
+        })?;
+
+    Ok((
+        AgentResponse {
+            session_id,
+            final_answer,
+            trace,
+        },
+        sse_stream,
+    ))
+}
+
 // Re-export key public types
 pub use guard::{run_with_guard, GuardConfig};
 pub use llm::{
@@ -166,3 +343,4 @@ pub use llm::{
 pub use r#loop::react_loop;
 pub use stream::create_sse_channel;
 pub use tool_registry::ToolRegistry;
+pub use window::{compress_context, count_tokens, should_compress};
