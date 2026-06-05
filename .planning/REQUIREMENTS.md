@@ -16,8 +16,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Memory
 
-- [ ] **MEM-01**: 单次会话内的对话上下文管理，支持上下文窗口管理和自动压缩
-- [ ] **MEM-02**: 会话状态持久化（SQLite 单机模式），支持会话暂停和恢复
+- [x] **MEM-01**: 单次会话内的对话上下文管理，支持上下文窗口管理和自动压缩
+- [x] **MEM-02**: 会话状态持久化（SQLite 单机模式），支持会话暂停和恢复
 
 ### Skill System
 
@@ -110,8 +110,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AGENT-02 | Phase 4: Tool System | Complete |
 | AGENT-03 | Phase 3: Agent Runtime | Complete |
 | AGENT-04 | Phase 3: Agent Runtime | Complete |
-| MEM-01 | Phase 5: Session Memory | Pending |
-| MEM-02 | Phase 5: Session Memory | Pending |
+| MEM-01 | Phase 5: Session Memory | Complete |
+| MEM-02 | Phase 5: Session Memory | Complete |
 | SKILL-01 | Phase 6: Skill System | Pending |
 | SKILL-02 | Phase 6: Skill System | Pending |
 | SEC-01 | Phase 2: Wasm Isolation Core | Complete |
