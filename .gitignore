@@ -26,3 +26,5 @@ Thumbs.db
 
 # MSVC Windows debug files
 *.pdb
+.codegraph
+
