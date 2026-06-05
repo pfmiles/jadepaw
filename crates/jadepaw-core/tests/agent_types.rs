@@ -29,6 +29,7 @@ fn agent_request_with_context() {
         session_id: jadepaw_core::SessionId::new(),
         user_message: "hello".to_string(),
         context: Some("be helpful".to_string()),
+        resume_from: None,
     };
     assert_eq!(req.user_message, "hello");
     assert_eq!(req.context, Some("be helpful".to_string()));

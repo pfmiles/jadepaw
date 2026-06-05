@@ -38,6 +38,7 @@ async fn run_with_guard_wall_clock_timeout() {
     let config = GuardConfig {
         max_iterations: 20,
         wall_clock_timeout: Duration::from_millis(50),
+        recent_turns: 5,
     };
     let result = run_with_guard(&config, || async {
         // Sleep longer than the timeout — should be interrupted
@@ -67,6 +68,7 @@ async fn run_with_guard_timeout_value_propagated() {
     let config = GuardConfig {
         max_iterations: 20,
         wall_clock_timeout: Duration::from_millis(10),
+        recent_turns: 5,
     };
     let result = run_with_guard(&config, || async {
         tokio::time::sleep(Duration::from_secs(999)).await;
