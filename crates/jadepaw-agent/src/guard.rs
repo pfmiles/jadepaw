@@ -48,6 +48,24 @@ impl GuardConfig {
     pub fn recent_turns(&self) -> u32 {
         self.recent_turns
     }
+
+    /// Validate config values are within reasonable bounds.
+    ///
+    /// GuardConfig is deserialized from user-provided YAML/JSON at runtime,
+    /// so unreasonable values (e.g. `max_iterations: 4294967295`) must be
+    /// rejected before entering the agent loop.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.max_iterations == 0 {
+            return Err("max_iterations must be at least 1");
+        }
+        if self.max_iterations > 10_000 {
+            return Err("max_iterations must not exceed 10000");
+        }
+        if self.recent_turns > 100 {
+            return Err("recent_turns must not exceed 100");
+        }
+        Ok(())
+    }
 }
 
 /// Run the agent loop with termination protection.
@@ -67,6 +85,13 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<Vec<ReActStep>>>,
 {
+    config.validate().map_err(|msg| {
+        JadepawError::agent_terminated(AgentTerminationReason::InfrastructureError {
+            reason: format!("invalid GuardConfig: {}", msg),
+            turn: 0,
+        })
+    })?;
+
     // Record start time to compute actual elapsed wall-clock time for
     // timeout termination (WR-03). The configured limit is passed as max_ms.
     let start = tokio::time::Instant::now();

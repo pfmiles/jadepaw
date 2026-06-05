@@ -315,7 +315,7 @@ pub async fn react_loop(
         // InstancePre.
         if let Some(repo) = session_repo {
             let elapsed = elapsed_accumulator_ms
-                + start.elapsed().as_millis() as u64;
+                + u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             // Serialize each JSON blob; skip the entire checkpoint on failure
             // rather than overwriting good DB data with a fallback value.
             let Ok(messages_json) = serde_json::to_string(&messages) else {
@@ -339,7 +339,7 @@ pub async fn react_loop(
                 trace_json,
                 guard_config_json,
                 elapsed_ms: elapsed,
-                iteration_count: turn + 1,
+                iteration_count: turn.saturating_add(1),
                 created_at: session_created_at,
                 updated_at: chrono::Utc::now(),
                 termination_reason_json: None,

@@ -29,7 +29,7 @@ fn system_msg(text: &str) -> ChatCompletionRequestMessage {
 
 /// Helper: create an in-memory SQLite repository.
 async fn make_repo() -> SqliteSessionRepo {
-    SqliteSessionRepo::new("sqlite://:memory:")
+    SqliteSessionRepo::new("sqlite::memory:")
         .await
         .expect("failed to create in-memory SQLite repo")
 }
