@@ -1,6 +1,6 @@
 ---
 phase: 05-session-memory
-reviewed: 2026-06-05T00:00:00Z
+reviewed: 2026-06-05T14:30:00Z
 depth: standard
 files_reviewed: 17
 files_reviewed_list:
@@ -22,14 +22,14 @@ files_reviewed_list:
   - crates/jadepaw-db/src/sqlite_repo.rs
   - crates/jadepaw-db/migrations/20260604000001_create_sessions.sql
 findings:
-  critical: 2
-  warning: 5
-  info: 3
+  critical: 0
+  warning: 6
+  info: 4
   total: 10
 status: issues_found
 ---
 
-# Phase 05: Code Review Report
+# Phase 05: Code Review Report (Re-review after fixes)
 
 **Reviewed:** 2026-06-05
 **Depth:** standard
@@ -38,198 +38,211 @@ status: issues_found
 
 ## Summary
 
-Phase 05 implements in-session context management (token counting, compression at 65% threshold) and SQLite-based session persistence with pause/resume support. The architecture is sound: `SessionRepository` trait enforces tenant isolation at every call site via mandatory `(session_id, tenant_id)` parameters, checkpoint failures are non-fatal (logged only), and the Wasm Store is deliberately NOT serialized (fresh Store on resume).
+This is a re-review of the Phase 05 (session-memory) implementation after all 7 Critical + Warning findings from the initial review were fixed (see `05-REVIEW-FIX.md`). The fixes addressed the infinite re-compression loop (CR-01), cross-tenant upsert vulnerability (CR-02), silent status-error swallowing (WR-01), guard-config serialization fallback corruption (WR-02), token-vs-message-count mismatch (WR-03), sentinel-vs-zero ambiguity (WR-04), and raw-string termination-reason (WR-05).
 
-10 findings identified: 2 critical (data-integrity / crash-recovery correctness), 5 warnings (correctness edge cases and defensive gaps), 3 info (code quality). The critical findings involve a context compression no-op that can trigger an infinite work loop when `compress_context` is called on a message list at the exact boundary where it cannot reduce message count, and an upsert in the SQLite save path that does not verify `tenant_id` on conflict — allowing cross-tenant data corruption in the presence of colliding session IDs.
-
-## Critical Issues
-
-### CR-01: compress_context can no-op at the `n_msgs_to_keep + 3` boundary, causing infinite re-compression in the ReAct loop
-
-**File:** `crates/jadepaw-agent/src/window.rs:86-136`
-**Issue:** `should_compress()` uses token count to decide when to compress (line 67-72), but `compress_context()` uses message COUNT to determine how many messages to remove (line 91: `n_msgs_to_keep = recent_n * 2`). This creates a mismatch: when a conversation has exactly `n_msgs_to_keep + 3` total messages (e.g., `recent_n = 5` -> `n_msgs_to_keep = 10` -> 13 total messages), the outer guard at line 94 (`messages.len() <= n_msgs_to_keep + 2`) fails (13 > 12), so compression proceeds. The `body.len()` is 11, which is > 10, so the split executes: `split = 1`, `older = 1 msg`, `recent = 10 msgs`. The result is `[msg0, msg1, summary, recent...]` = 13 messages, which is the SAME count as the original. No reduction occurs.
-
-If `should_compress()` returned `true` (token count exceeded threshold) but `compress_context()` returns the same-size message list, the token count will still exceed the threshold on the next iteration. The ReAct loop at `loop.rs:176-186` calls `should_compress` every turn and invokes `compress_context` when it returns `true`. This creates an infinite busy-work cycle: every turn compresses, achieves nothing, token count stays the same, and the next turn compresses again.
-
-**Fix:**
-Ensure `compress_context` never returns the original message count. Change the guard at line 94 from `+ 2` to `+ 3`, which guarantees at least one message is removed (the replaced old messages must outnumber the summary addition):
-
-```rust
-    // Need at least 3 more messages than we can keep for meaningful compression.
-    // Otherwise we'd add a summary message but only "remove" a single old message,
-    // leaving the total count unchanged and causing infinite re-compression.
-    if messages.len() <= n_msgs_to_keep + 3 {
-        return messages;
-    }
-```
-
-Alternatively, add a post-compression token count check and fall back to a more aggressive strategy (e.g., drop original system/user messages) if the compressed result still exceeds the threshold.
-
-### CR-02: upsert `ON CONFLICT(session_id)` allows cross-tenant data overwrite when session_id collides
-
-**File:** `crates/jadepaw-db/src/sqlite_repo.rs:84-96`
-**Issue:** The `save()` method uses `INSERT ... ON CONFLICT(session_id) DO UPDATE` where `session_id` alone is the PRIMARY KEY. The INSERT includes `tenant_id`, but the DO UPDATE SET clause does NOT update `tenant_id` on conflict — yet it DOES overwrite all other fields (`messages_json`, `trace_json`, etc.) belonging to the original tenant. The WHERE clause in `load()` and `delete()` protects reads and deletes via `WHERE session_id = ? AND tenant_id = ?`, but the upsert in `save()` has no such protection.
-
-This means: if two different tenants produce the same `session_id` UUID (through a v7 collision, external injection, or UUID reuse bug), tenant B's save will silently overwrite tenant A's session data because the conflict is only on `session_id`, not `(session_id, tenant_id)`. While UUID v7 collision is cryptographically infeasible in normal operation, the defense-in-depth principle already applied everywhere else in this codebase (mandatory dual-key lookups) is violated right at the persistence layer.
-
-**Fix:**
-Add a composite unique constraint on `(session_id, tenant_id)` in the migration SQL, then use it in the upsert:
-
-```sql
--- In migration: change primary key to composite or add a unique constraint
-ALTER TABLE sessions DROP PRIMARY KEY;
-ALTER TABLE sessions ADD PRIMARY KEY (session_id, tenant_id);
-```
-
-If keeping `session_id` as the sole primary key is desired for query performance, use a WHERE clause in the upsert:
-
-```rust
-sqlx::query(
-    "INSERT INTO sessions (...) VALUES (...)\
-     ON CONFLICT(session_id) DO UPDATE SET \
-       status = excluded.status, \
-       messages_json = excluded.messages_json, \
-       ... \
-       WHERE tenant_id = excluded.tenant_id"
-)
-```
-
-Then add a separate (or fallback) error path when the WHERE clause excludes the row (meaning the tenant_id didn't match — a genuine collision scenario that should be surfaced as an error).
+All fixes are verified correct and intact in the current code. This re-review identifies 6 new Warnings and 4 Info items that remain in the codebase or were introduced by the fix iterations. No new Critical/Blocker-level issues were found.
 
 ## Warnings
 
-### WR-01: resume_session silently discards status update errors, risking crash recovery inconsistency
+### WR-01: compress_context aggressive fallback drops original system prompt, losing tool definitions and ReAct instructions
 
-**File:** `crates/jadepaw-agent/src/lib.rs:247-249, 306-308`
-**Issue:** Both `update_status` calls in `resume_session()` use `let _ = repo.update_status(...)` which discards the `Result`. Line 247 sets status to Running before the loop, and line 306 sets it to Ended afterward. If the Running update fails (e.g., DB locked, disk full), the session stays "paused" in the DB while actually executing — meaning a subsequent crash recovery via `mark_running_as_paused()` would NOT detect this session as recoverable because it's still marked "paused". The checkpointing pattern in `loop.rs:342-348` logs checkpoint failures at error level. Status updates have different semantics: an incorrect status leads to incorrect crash recovery behavior, which is more severe than a missed checkpoint.
+**File:** `crates/jadepaw-agent/src/window.rs:147-155, 170-176`
+**Issue:** When the post-compression message-count or token-count verification fails (lines 140, 163), the aggressive fallback constructs a new message list as `[summary_msg, recent_n_turns...]` — explicitly dropping `messages[0]` (system prompt with tool definitions and ReAct instructions) and `messages[1]` (original user message). The summary message (`ChatCompletionRequestSystemMessage`) contains extracted statistics from older turns but does NOT replicate the system prompt's critical content (ReAct reasoning format, available tool names and parameter schemas, behavioral constraints).
 
-**Fix:**
-At minimum, log with `tracing::error!` (mirroring the checkpoint pattern). Better yet, propagate the error:
+If the fallback triggers during an active session, the LLM loses awareness of:
+- The ReAct think-act-observe format instructions
+- Available tool names and their parameter schemas
+- Any custom system-level behavioral constraints
 
+This can cause the agent to stop following the ReAct pattern, hallucinate tool names, or produce degraded responses. The `tracing::warn!` call is present, so operators are notified, but the behavioral degradation is silent from the user's perspective.
+
+Note: this only fires in edge cases where normal compression fails to reduce message count or token count — typically when the summary message itself is very large or the recent N turns are enormous. The summary generation is lightweight (~200 chars), so the common case is safe.
+
+**Fix:** Preserve the original system prompt in the aggressive fallback:
 ```rust
-    repo.update_status(session_id, tenant_id, SessionStatus::Running)
-        .await
-        .map_err(|e| {
-            JadepawError::agent_terminated(
-                jadepaw_core::AgentTerminationReason::InfrastructureError {
-                    reason: format!("failed to update session status to running: {}", e),
-                    turn: 0,
-                },
-            )
-        })?;
+// Instead of dropping messages[0], include it before the summary:
+let mut fallback = Vec::with_capacity(2 + recent_len);
+fallback.push(messages[0].clone()); // preserve original system prompt
+fallback.push(summary_msg);         // inject compression summary
+let body = &messages[2..];
+let split = body.len().saturating_sub(n_msgs_to_keep);
+fallback.extend(body[split..].iter().cloned());
+return fallback;
 ```
 
-### WR-02: serialize-to-"{}" fallback for guard_config_json will silently revert resumed sessions to default GuardConfig
+### WR-02: build_summary counts ChatCompletionRequestMessage::System variants as "assistant" messages
 
-**File:** `crates/jadepaw-agent/src/loop.rs:331-334`
-**Issue:** When `serde_json::to_string(guard_config)` fails during checkpoint construction, the fallback stores `"{}"`. On resume at `lib.rs:243-244`, `serde_json::from_str(&snapshot.guard_config_json)` will fail on `"{}"` (missing fields), and `unwrap_or_default()` will silently produce `GuardConfig::default()`. If the session was running with a non-default config (e.g., `max_iterations: 50`, custom `wall_clock_timeout`), the resumed session silently switches to defaults. This is a silent correctness degradation. While serde serialization failure on GuardConfig is extremely unlikely, the fallback value is permanently destructive: the next checkpoint save will overwrite the previous good data via the upsert.
-
-**Fix:**
-Instead of falling back to empty defaults, skip the checkpoint when serialization fails:
-
+**File:** `crates/jadepaw-agent/src/window.rs:218-226`
+**Issue:** The `assistant_count` computation uses a `matches!` macro that includes both `Assistant(_)` and `System(_)` variants:
 ```rust
-let Ok(messages_json) = serde_json::to_string(&messages) else {
-    tracing::error!("failed to serialize messages for checkpoint; skipping");
-    continue;
-};
-let Ok(trace_json) = serde_json::to_string(&trace) else {
-    tracing::error!("failed to serialize trace for checkpoint; skipping");
-    continue;
-};
-let Ok(guard_config_json) = serde_json::to_string(guard_config) else {
-    tracing::error!("failed to serialize guard config for checkpoint; skipping");
-    continue;
-};
+let assistant_count = messages
+    .iter()
+    .filter(|m| {
+        matches!(
+            m,
+            ChatCompletionRequestMessage::Assistant(_) | ChatCompletionRequestMessage::System(_)
+        )
+    })
+    .count();
 ```
 
-This preserves the last good snapshot instead of overwriting it with bad data.
+When a previous compression injected a summary system message into the conversation body, subsequent compressions will count that system message as an "assistant" message. The summary text "N earlier messages (X user, Y assistant)" will report an inflated assistant count (Y = actual_assistant + system_messages). The total N is from `messages.len()` which includes all message types, so the discrepancy is visible: X + Y != N when system messages are present.
 
-### WR-03: should_compress uses token count but compress_context uses message count — semantic mismatch
-
-**File:** `crates/jadepaw-agent/src/window.rs:67-72, 86-136`
-**Issue:** `should_compress()` returns `true` when total tokens exceed 65% of the model's context window (token-based). But `compress_context()` decides how many messages to remove based solely on message COUNT (`n_msgs_to_keep`). If compression is triggered by token growth (many long messages) but the message count says "short enough," the function returns the original messages unchanged. CR-01 describes the specific infinite-loop case, but the broader issue is that `compress_context` does not verify that its output actually reduces the token count. A session with very long messages could trigger `should_compress` every turn, but `compress_context` only trims message count, not token count per message.
-
-**Fix:**
-Add a post-compression token count verification:
-
+**Fix:** Either count system messages separately or exclude them from the assistant count:
 ```rust
-    // Verify compression actually reduced tokens
-    let compressed_tokens = count_tokens(&result, model);
-    let original_tokens = count_tokens(&messages, model);
-    if compressed_tokens >= original_tokens {
-        tracing::warn!(
-            original = original_tokens,
-            compressed = compressed_tokens,
-            "compression did not reduce token count; applying aggressive fallback"
-        );
-        // Fallback: summary only + last 2 turns
-        // ...
-    }
+let assistant_count = messages
+    .iter()
+    .filter(|m| matches!(m, ChatCompletionRequestMessage::Assistant(_)))
+    .count();
+let system_count = messages
+    .iter()
+    .filter(|m| matches!(m, ChatCompletionRequestMessage::System(_)))
+    .count();
+// Then use both in the summary format string.
 ```
 
-### WR-04: extract_turn_from_error caller uses unwrap_or(0), defeating the Option design
+### WR-03: compress_context aggressive fallback (token-count branch) lacks verification that the fallback output actually reduces token count
 
-**File:** `crates/jadepaw-agent/src/guard.rs:120`
-**Issue:** `extract_turn_from_error` (line 153-161) returns `Option<u32>` with the explicit documented purpose: "callers can distinguish between 'error on turn 0' and 'turn could not be parsed'." However, line 120 uses `unwrap_or(0)`, which collapses the distinction. An unparseable error message is attributed to turn 0, indistinguishable from a real turn-0 error. This is the behavior the `Option` return was explicitly designed to avoid.
+**File:** `crates/jadepaw-agent/src/window.rs:162-176`
+**Issue:** The token-count verification path (lines 161-176) constructs an aggressive fallback when `compressed_tokens >= original_tokens`, but the fallback output itself is NOT verified to reduce the token count. If the fallback messages `[summary_msg, recent_n_turns...]` still exceed 65% of the context window (theoretically possible if recent N turns contain enormous tool outputs), the function returns them without further reduction.
 
-**Fix:**
-Use `None` to propagate the unknown-turn case. In the `WasmTrap` construction, use a sentinel value or explicitly handle the unparseable case:
+On the next ReAct loop iteration, `should_compress()` will return `true` again, and `compress_context` will be called on the already-fallback-processed messages. The early-return guard at line 97 (`messages.len() <= n_msgs_to_keep + 3`) will fire (since the fallback output has at most `1 + 2*recent_n` messages), causing the function to return unchanged messages. This creates a persistent re-compression cycle that cannot make progress because the early-return guard prevents any further action.
 
+The practical risk is low: to trigger this, 11 messages (with `recent_n=5`) would need to exceed ~83,200 tokens (65% of GPT-4o's 128K context window), requiring each message to average ~7,500 tokens. But it is a correctness gap in the compression algorithm.
+
+**Fix:** Add a guard against the degenerate case in the aggressive fallback itself:
 ```rust
-                let err_msg = e.to_string();
-                let turn = extract_turn_from_error(&err_msg).unwrap_or(u32::MAX);
-                JadepawError::agent_terminated(
-                    AgentTerminationReason::WasmTrap {
-                        reason: err_msg,
-                        turn,
-                    },
-                )
+let fallback_tokens = count_tokens(&fallback, model);
+if fallback_tokens >= original_tokens {
+    // Even aggressive fallback cannot compress. Truncate to last N turns only,
+    // dropping the summary to guarantee progress.
+    let mut minimal = Vec::with_capacity(recent_len);
+    let split = body.len().saturating_sub(n_msgs_to_keep);
+    minimal.extend(body[split..].iter().cloned());
+    return minimal;
+}
 ```
 
-Alternatively, match on `Some(turn)` / `None` and produce a distinct `AgentTerminationReason` variant for unparseable errors.
+### WR-04: run_agent passes TenantId::default() (random UUID) instead of deriving from authenticated request context
 
-### WR-05: SessionSummary.termination_reason stores raw JSON string without a deserialization path
-
-**File:** `crates/jadepaw-db/src/sqlite_repo.rs:256-257, crates/jadepaw-db/src/models.rs:97-98`
-**Issue:** `list_by_tenant` reads `termination_reason_json` as a raw string and assigns it directly to `SessionSummary::termination_reason`. The field is documented as "Stored as string to avoid requiring Serialize/Deserialize on AgentTerminationReason" (models.rs:97-98). This means ALL consumers of `SessionSummary` receive an opaque string they cannot programmatically interpret — they would need their own ad-hoc JSON parsing, which defeats the purpose of a structured type. The `session_persistence.rs` test `list_by_tenant_returns_summaries` never creates sessions with termination reasons, so the `Some` code path is untested.
-
-**Fix:**
-Add `Serialize, Deserialize` derives to `AgentTerminationReason`, change `SessionSummary::termination_reason` to `Option<AgentTerminationReason>`, and deserialize in `list_by_tenant`:
-
+**File:** `crates/jadepaw-agent/src/lib.rs:125`
+**Issue:** In `run_agent()`, the tenant_id is set to `TenantId::default()` which creates a new random UUID v7 on every call:
 ```rust
-let termination_reason: Option<AgentTerminationReason> = match termination_reason_json {
-    Some(s) => serde_json::from_str(&s).ok(),
-    None => None,
-};
+r#loop::react_loop(
+    ...
+    TenantId::default(),    // line 125
+    ...
+)
 ```
 
-Add a test that creates a session with a termination reason and verifies roundtrip through save/load/list.
+In the current code path, `session_repo` is `None` for fresh sessions, so this random UUID is never persisted and the isolation concern is moot. However, it represents a design gap:
+- The tenant_id should come from the authenticated request context (e.g., `AgentRequest` should carry a `tenant_id` field, or it should be injected by middleware/auth layer)
+- If fresh-session persistence is enabled in a future iteration (by passing `Some(repo)`), the random UUID would create un-recoverable sessions (no way to look up by tenant)
+- The `resume_session` path correctly receives `tenant_id` as a parameter, creating an inconsistency in how tenant context flows through the two entry points
+
+**Fix:** Add a `tenant_id: TenantId` field to `AgentRequest` in `jadepaw-core`, or add a `tenant_id` parameter to `run_agent()`:
+```rust
+pub async fn run_agent(
+    req: AgentRequest,
+    tenant_id: TenantId,  // new parameter
+    pool: Arc<InstancePool>,
+    ...
+)
+```
+
+### WR-05: save() cross-tenant collision error message omits the tenant_id that triggered the collision
+
+**File:** `crates/jadepaw-db/src/sqlite_repo.rs:122-127`
+**Issue:** When the upsert's WHERE clause filters out the row due to `tenant_id` mismatch, the error message only includes `session_id`:
+```rust
+anyhow::bail!(
+    "cross-tenant session_id collision: session {} exists under a different tenant",
+    session_id
+);
+```
+
+For operational debugging of a cross-tenant collision (which, while cryptographically infeasible for UUID v7, could indicate a UUID reuse bug or external injection), knowing WHICH tenant triggered the collision and WHICH tenant owns the existing session is essential for root cause analysis. The `tenant_id` used in the save call is available in scope but not included in the error message.
+
+**Fix:** Include both tenant IDs:
+```rust
+anyhow::bail!(
+    "cross-tenant session_id collision: session {} belongs to a different tenant (attempted insert with tenant {})",
+    session_id,
+    tenant_id
+);
+```
+
+### WR-06: resume_session user_message parameter passed as empty string; if pre_existing_messages is empty (corrupted snapshot), build_initial_messages produces degenerate output
+
+**File:** `crates/jadepaw-agent/src/lib.rs:294`
+**Issue:** In `resume_session`, the `user_message` parameter to `react_loop` is hardcoded to `""` with the comment "not used when pre_existing_messages is not empty." This is correct in normal operation. However, if `pre_existing_messages` is somehow empty (snapshot corruption, deserialization producing zero messages, manual DB manipulation), `react_loop` at line 154-156 will call:
+```rust
+llm::build_initial_messages(system_prompt, user_message, context)
+```
+with `user_message = ""` and `context = None` (also hardcoded at line 295). This produces `[system("..."), user("")]` — a degenerate initial message list with an empty user message. The LLM may produce arbitrary output or error in response to an empty user message.
+
+**Fix:** Add a defensive check and return an error if pre_existing_messages is unexpectedly empty:
+```rust
+if pre_existing_messages.is_empty() {
+    return Err(JadepawError::agent_terminated(
+        jadepaw_core::AgentTerminationReason::InfrastructureError {
+            reason: "corrupted session snapshot: pre_existing_messages is empty".to_string(),
+            turn: 0,
+        },
+    ));
+}
+```
 
 ## Info
 
-### IN-01: compress_context accepts `model` parameter it does not use
-
-**File:** `crates/jadepaw-agent/src/window.rs:133`
-**Issue:** The `let _ = model;` statement explicitly suppresses the unused variable warning. The comment explains it's reserved for "future model-aware summary size control." The parameter is misleading because the function signature suggests model-specific behavior but none is implemented. It also forces the caller (`loop.rs:179`) to thread a `model` string through, adding parameter passing complexity for no runtime benefit.
-
-**Fix:** Either remove the `model` parameter from `compress_context` and update the call site, or implement a post-compression token count check using `model` (providing immediate value: verify compressed result actually fits the model's limits).
-
-### IN-02: migration path documented incorrectly in migrations.rs
+### IN-01: migrations.rs comment references wrong migration path
 
 **File:** `crates/jadepaw-db/src/migrations.rs:18`
-**Issue:** The comment states `sqlx::migrate!("../migrations")` but the actual invocation in `sqlite_repo.rs:62` uses `sqlx::migrate!("./migrations")`. The `"../migrations"` path would resolve one directory above the crate root (`crates/migrations/`) and would fail at compile time. The code is correct — only the comment is wrong.
+**Issue:** The comment states `sqlx::migrate!("../migrations")` but the actual code in `sqlite_repo.rs:62` uses `sqlx::migrate!("./migrations")`. The `../migrations` path would resolve to `crates/migrations/` and fail at compile time. The code is correct — only the comment is stale. This was flagged as IN-02 in the previous review and was not fixed (Info-level findings were out of scope for the fix iteration).
 
-**Fix:** Update the comment:
+**Fix:**
 ```rust
 // Migrations are embedded via sqlx::migrate!("./migrations") in sqlite_repo.rs.
 ```
 
-### IN-03: GuardConfig.recent_turns field and method have the same name
+### IN-02: GuardConfig.recent_turns has redundant public field and public getter method
 
-**File:** `crates/jadepaw-agent/src/guard.rs:32,48`
-**Issue:** The public field `recent_turns` (line 32) and the public method `recent_turns()` (line 48) have identical names. The method is a trivial getter that returns `self.recent_turns`. Rust allows this (methods shadow fields in method call position), but it's redundant: either the field should be private (if encapsulation is desired) or the method should be removed (since public field access is equivalent).
+**File:** `crates/jadepaw-agent/src/guard.rs:32,48-50`
+**Issue:** The field `pub recent_turns: u32` (line 32) and the method `pub fn recent_turns(&self) -> u32` (line 48) are both public and have the same name. The method is a trivial getter returning `self.recent_turns`. Rust allows this (methods shadow fields in method-call position), but having both is redundant. Callers at `loop.rs:178` use `guard_config.recent_turns()` (method syntax), but field access `guard_config.recent_turns` would be equivalent given the field is public. This was flagged as IN-03 in the previous review and was not fixed.
 
-**Fix:** Remove the method (callers already access `config.recent_turns` as a field) or make the field private and keep the method.
+**Fix:** Either remove the method (keep field access) or make the field private (keep method for encapsulation). The field needs to remain accessible for `serde` deserialization, which works with private fields.
+
+### IN-03: SessionSnapshot.termination_reason_json is always None in write paths
+
+**File:** `crates/jadepaw-agent/src/loop.rs:345`, `crates/jadepaw-db/src/models.rs:77`
+**Issue:** The `SessionSnapshot::termination_reason_json` field is defined in the data model, present in the SQL schema (as nullable TEXT), and properly read back in `load()` and `list_by_tenant()`. However, all write paths set it to `None`:
+- `react_loop` checkpoint construction at line 345: `termination_reason_json: None`
+- Test helpers in `session_persistence.rs` also set it to `None`
+
+The field is never populated with an actual `AgentTerminationReason` when a session ends. This means the `SessionSummary::termination_reason` field (now correctly typed as `Option<AgentTerminationReason>` after WR-05 fix) will always be `None` for all sessions, regardless of whether they ended normally or were terminated by a guard.
+
+**Fix:** When the agent loop terminates or the guard fires, construct the appropriate `AgentTerminationReason`, serialize it, and persist it via `update_status()` or a final `save()` call. The infrastructure for this already exists (the field, the schema, the deserialization) and only the write path is missing.
+
+### IN-04: compress_context token-count fallback duplicates message-count fallback logic
+
+**File:** `crates/jadepaw-agent/src/window.rs:147-155, 170-176`
+**Issue:** The aggressive fallback logic is duplicated verbatim: once for the message-count reduction check (lines 147-155) and again for the token-count reduction check (lines 170-176). Both blocks construct `[summary_msg, recent_n_turns...]` using the same algorithm. The `recent_len` variable is computed at line 124 but the fallback at line 170 uses it without re-computing (it's still in scope), which is correct but fragile if the code is restructured.
+
+**Fix:** Extract the aggressive fallback into a private helper function:
+```rust
+fn aggressive_fallback(
+    messages: &[ChatCompletionRequestMessage],
+    summary_msg: ChatCompletionRequestMessage,
+    n_msgs_to_keep: usize,
+) -> Vec<ChatCompletionRequestMessage> {
+    let body = &messages[2..];
+    let split = body.len().saturating_sub(n_msgs_to_keep);
+    let mut fallback = Vec::with_capacity(1 + body.len() - split);
+    fallback.push(summary_msg);
+    fallback.extend(body[split..].iter().cloned());
+    fallback
+}
+```
 
 ---
 
