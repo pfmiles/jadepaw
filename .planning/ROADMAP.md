@@ -161,14 +161,14 @@ Plans:
   4. A SKILL.md file with invalid YAML frontmatter is rejected at load time with a clear error message indicating the parse failure location
   5. Multiple skills can be loaded simultaneously and the agent correctly merges their tool declarations and instruction contexts
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 
 **Wave 1**
 
 - [x] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
-- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+- [x] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -195,7 +195,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [x] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
 - [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -270,7 +270,7 @@ Plans:
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
 | 4. Tool System | 3/3 | Complete    | 2026-06-03 |
 | 5. Session Memory | 2/2 | Complete    | 2026-06-05 |
-| 6. Skill System | 1/3 | In Progress|  |
+| 6. Skill System | 2/3 | In Progress|  |
 | 7. Web Chat UI | 0/? | Not started | — |
 | 8. Skill Management UI | 0/? | Not started | — |
 | 9. Observability | 0/? | Not started | — |
