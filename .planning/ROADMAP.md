@@ -163,6 +163,18 @@ Plans:
 
 **Plans:** 3 plans
 
+Plans:
+
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
+
+
 ### Phase 7: Web Chat UI
 
 **Goal:** Users open a browser to `localhost:PORT` and have a full streaming chat conversation with their agent through a clean web interface.
@@ -178,6 +190,18 @@ Plans:
   5. The chat interface works identically whether jadepaw is running on localhost or deployed to a remote server (same UI code)
 
 **Plans:** 3 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
+
 
 **UI hint:** yes
 
@@ -196,6 +220,18 @@ Plans:
 
 **Plans:** 3 plans
 
+Plans:
+
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
+
+
 **UI hint:** yes
 
 ### Phase 9: Observability
@@ -212,6 +248,18 @@ Plans:
   4. Structured tracing spans nest correctly: a tool call span is a child of the agent reasoning span, which is a child of the session span
 
 **Plans:** 3 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — Core types (SkillId, SkillManifest, SkillValidationError in jadepaw-core) and SKILL.md parser (gray_matter YAML frontmatter + Markdown body extraction with validation in jadepaw-skill)
+- [ ] 06-02-PLAN.md — SkillManager (load/unload/merge_active), SkillRegistry (Arc<DashMap<TenantId, ActiveSkillState>>), system prompt injection (XML skill_instructions block, late-binding per-turn rebuild), ToolRegistry panic→Result migration, react_loop mid-session swap
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-03-PLAN.md — SkillRepository trait + SQLite impl, walkdir startup scan → SkillIndex sync, REST API endpoints (POST /skills/load, POST /skills/unload, GET /skills/list, GET /skills/inspect/{name}), server startup integration
+
 
 ## Progress
 
