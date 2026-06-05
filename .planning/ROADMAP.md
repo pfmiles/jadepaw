@@ -11,7 +11,7 @@
 - [x] **Phase 2: Wasm Isolation Core** — Per-session Wasm sandbox with hardware-level tenant isolation (completed 2026-05-30)
 - [x] **Phase 3: Agent Runtime** — ReAct execution loop with streaming output and termination guards (completed 2026-06-01)
 - [x] **Phase 4: Tool System** — MCP-compatible tool protocol with file RW and HTTP tools (completed 2026-06-03)
-- [ ] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence
+- [x] **Phase 5: Session Memory** — In-session context management and SQLite-based persistence (completed 2026-06-05)
 - [ ] **Phase 6: Skill System** — Declarative SKILL.md format with hot loading and runtime swapping
 - [ ] **Phase 7: Web Chat UI** — Browser-based streaming chat interface via HTMX + SSE
 - [ ] **Phase 8: Skill Management UI** — Web interface for listing, loading, and unloading skills
@@ -135,17 +135,17 @@ Plans:
   3. A user opens two sessions simultaneously — their contexts are fully isolated with no cross-contamination
   4. Session data is stored in SQLite (single-file, zero-config), and the database can be backed up by copying the file
 
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 
 **Wave 1**
 
-- [ ] 05-01-PLAN.md -- jadepaw-db crate (SessionRepository trait, models, SQLite repo with WAL mode), AgentRequest.resume_from, GuardConfig.recent_turns
+- [x] 05-01-PLAN.md -- jadepaw-db crate (SessionRepository trait, models, SQLite repo with WAL mode), AgentRequest.resume_from, GuardConfig.recent_turns
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 05-02-PLAN.md -- Context window compression (tiktoken-rs token counting, 65% threshold, compress_context), react_loop integration (token check + turn-boundary persistence), resume_session() API, integration tests
+- [x] 05-02-PLAN.md -- Context window compression (tiktoken-rs token counting, 65% threshold, compress_context), react_loop integration (token check + turn-boundary persistence), resume_session() API, integration tests
 
 ### Phase 6: Skill System
 
@@ -221,7 +221,7 @@ Plans:
 | 2. Wasm Isolation Core | 3/3 | Complete    | 2026-05-30 |
 | 3. Agent Runtime | 2/2 | Complete    | 2026-06-01 |
 | 4. Tool System | 3/3 | Complete    | 2026-06-03 |
-| 5. Session Memory | 0/2 | Planned | — |
+| 5. Session Memory | 2/2 | Complete   | 2026-06-05 |
 | 6. Skill System | 0/? | Not started | — |
 | 7. Web Chat UI | 0/? | Not started | — |
 | 8. Skill Management UI | 0/? | Not started | — |
