@@ -243,10 +243,20 @@ pub async fn resume_session(
     let guard_config: guard::GuardConfig =
         serde_json::from_str(&snapshot.guard_config_json).unwrap_or_default();
 
-    // 4. Update status to Running before entering the loop
-    let _ = repo
+    // 4. Update status to Running before entering the loop.
+    // Log failures at error level — an incorrect DB status means crash
+    // recovery (mark_running_as_paused) won't detect this session.
+    if let Err(e) = repo
         .update_status(session_id, tenant_id, SessionStatus::Running)
-        .await;
+        .await
+    {
+        tracing::error!(
+            error = %e,
+            session_id = %session_id,
+            tenant_id = %tenant_id,
+            "failed to update session status to running; crash recovery may miss this session"
+        );
+    }
 
     // 5. Acquire fresh Wasm Store — D-06a: Stores are NOT serialized
     let state = SessionState::with_defaults(temp_dir());
@@ -302,10 +312,21 @@ pub async fn resume_session(
 
     let trace = trace?;
 
-    // 8. Update status to Ended
-    let _ = repo
+    // 8. Update status to Ended. Log failures at error level — if this
+    // update fails, the session remains "running" in the DB and would be
+    // picked up by crash recovery on next startup (mark_running_as_paused),
+    // creating a zombie session.
+    if let Err(e) = repo
         .update_status(session_id, tenant_id, SessionStatus::Ended)
-        .await;
+        .await
+    {
+        tracing::error!(
+            error = %e,
+            session_id = %session_id,
+            tenant_id = %tenant_id,
+            "failed to update session status to ended; session may appear as zombie in crash recovery"
+        );
+    }
 
     // Extract the final answer
     let final_answer = trace
