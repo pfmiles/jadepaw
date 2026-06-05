@@ -4,7 +4,7 @@
 -- prevents cross-tenant data leakage.
 
 CREATE TABLE IF NOT EXISTS skill_index (
-    skill_id    BLOB PRIMARY KEY NOT NULL,
+    skill_id    BLOB NOT NULL,
     tenant_id   BLOB NOT NULL,
     name        TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS skill_index (
     tools_json  TEXT NOT NULL DEFAULT '[]',
     file_path   TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (skill_id, tenant_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_skill_index_tenant_name

@@ -53,10 +53,12 @@ impl SqliteSkillRepo {
 impl SkillRepository for SqliteSkillRepo {
     /// Bulk-upsert skill index entries.
     ///
-    /// Uses INSERT OR REPLACE for each entry. The ON CONFLICT clause with
-    /// WHERE tenant_id ensures that a (skill_id, tenant_id) pair uniquely
-    /// identifies a record — a different tenant_id for the same skill_id
-    /// is treated as a separate record.
+    /// Uses INSERT OR REPLACE for each entry. The composite PRIMARY KEY
+    /// (skill_id, tenant_id) ensures that a (skill_id, tenant_id) pair
+    /// uniquely identifies a record — a different tenant_id for the same
+    /// skill_id is treated as a separate record. If any columns are missing
+    /// from the explicit column list, REPLACE sets them to their default
+    /// values (SQLite behavior).
     async fn sync_index(&self, entries: &[SkillIndexRecord]) -> Result<()> {
         for entry in entries {
             sqlx::query(
