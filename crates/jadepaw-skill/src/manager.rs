@@ -67,6 +67,14 @@ impl SkillManager {
     /// * `tenant_id` — the tenant loading this skill
     /// * `skill_name` — the skill directory name (must match manifest name)
     /// * `tool_lookup` — optional tool registry for validating declared tools
+    ///
+    /// # Coupling with SessionState
+    ///
+    /// Skill load/unload does NOT update `SessionState` capability sets. The
+    /// `ToolRegistry::call_tool()` method checks `SessionState::can_call_tool()`
+    /// on every invocation. If tool availability changes via skill swap, the
+    /// caller (react_loop / run_agent) MUST update the session's capability set
+    /// to reflect the merged tool list. See `tool_registry.rs` for details.
     pub async fn load(
         &self,
         tenant_id: TenantId,
