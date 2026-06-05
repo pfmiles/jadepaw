@@ -232,6 +232,17 @@ impl ToolRegistry {
             // gap by enforcing domain capability at the Registry level (D-01a).
             if name == HTTP_REQUEST_TOOL_NAME {
                 if let Some(host) = args.get("url").and_then(|v| v.as_str()).map(extract_host_from_url) {
+                    // WR-05: Deny degenerate URLs where no valid host can be
+                    // extracted (e.g., "http://" with no host). An empty host
+                    // could bypass domain whitelist substring/prefix matching.
+                    if host.is_empty() {
+                        return ToolResult::from_error(
+                            "CAPABILITY_DENIED",
+                            "Could not extract a valid host from the provided URL. \
+                             The URL must include a valid hostname (e.g., https://example.com/path).",
+                            false,
+                        );
+                    }
                     if !state.can_access_domain(host) {
                         return ToolResult::from_error(
                             "CAPABILITY_DENIED",
