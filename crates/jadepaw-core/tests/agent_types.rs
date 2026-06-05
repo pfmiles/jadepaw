@@ -30,6 +30,7 @@ fn agent_request_with_context() {
         user_message: "hello".to_string(),
         context: Some("be helpful".to_string()),
         resume_from: None,
+        skills: vec![],
     };
     assert_eq!(req.user_message, "hello");
     assert_eq!(req.context, Some("be helpful".to_string()));
