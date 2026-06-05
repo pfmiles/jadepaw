@@ -5,9 +5,12 @@
 //!
 //! ## What lives here
 //!
-//! - SKILL.md parser (YAML frontmatter → validated SkillManifest + Markdown body)
+//! - SKILL.md parser (YAML frontmatter -> validated SkillManifest + Markdown body)
 //! - Skill name and description validation (Agent Skills open standard rules)
 //! - SkillManifest type re-exports from jadepaw-core
+//! - In-memory skill registry with per-tenant concurrent access (DashMap)
+//! - Skill lifecycle manager (load, unload, merge, swap)
+//! - XML skill context block injector for system prompt augmentation
 //!
 //! ## What does NOT live here
 //!
@@ -15,17 +18,20 @@
 //! - Agent loop or LLM client (see jadepaw-agent)
 //! - Core data types (see jadepaw-core)
 
+pub mod injector;
+pub mod manager;
 pub mod manifest;
 pub mod parser;
+pub mod registry;
 pub mod validation;
 
 // Future modules (activated in subsequent plans):
-// pub mod registry;
-// pub mod manager;
-// pub mod injector;
 // pub mod loader;
 // pub mod index;
 
+pub use injector::build_skill_context_block;
+pub use manager::SkillManager;
 pub use manifest::SkillManifest;
 pub use parser::parse_skill_file;
+pub use registry::{ActiveSkillState, LoadedSkill, SkillRegistry, SkillSwap};
 pub use validation::validate_skill_name;

@@ -19,10 +19,35 @@
 //! `Tool::call()` should only be invoked through `ToolRegistry::call_tool()`.
 //! Direct calls bypass the `can_call_tool()` capability gate.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::types::SessionId;
+use crate::types::{SessionId, ToolId};
+
+/// Trait for looking up tools by name.
+///
+/// This trait provides the minimal interface that `SkillManager` needs to
+/// validate tool declarations during skill loading. It is defined in
+/// `jadepaw-core` to avoid a circular dependency between `jadepaw-skill`
+/// (which needs tool lookup) and `jadepaw-agent` (which needs SkillManager).
+///
+/// `ToolRegistry` in `jadepaw-agent` implements this trait.
+pub trait ToolLookup: Send + Sync {
+    /// Look up a tool by name, returning its `ToolId` and definition.
+    ///
+    /// Returns `None` if no tool with the given name is registered.
+    fn lookup_by_name(&self, name: &str) -> Option<(ToolId, ToolDefinition)>;
+}
+
+/// Blanket implementation so `Arc<dyn ToolLookup>` can be passed where
+/// `&dyn ToolLookup` is expected.
+impl<T: ToolLookup + ?Sized> ToolLookup for Arc<T> {
+    fn lookup_by_name(&self, name: &str) -> Option<(ToolId, ToolDefinition)> {
+        (**self).lookup_by_name(name)
+    }
+}
 
 /// Extract the host portion from a URL string.
 ///

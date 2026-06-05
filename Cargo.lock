@@ -1494,6 +1494,7 @@ dependencies = [
  "futures",
  "jadepaw-core",
  "jadepaw-db",
+ "jadepaw-skill",
  "jadepaw-wasm",
  "serde",
  "serde_json",
@@ -1572,13 +1573,14 @@ dependencies = [
 name = "jadepaw-skill"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dashmap",
  "gray_matter",
- "jadepaw-agent",
  "jadepaw-core",
- "jadepaw-db",
- "jadepaw-wasm",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
