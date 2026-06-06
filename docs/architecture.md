@@ -1,9 +1,9 @@
 <!-- generated-by: gsd-doc-writer -->
 # jadepaw 整体架构
 
-**版本:** 0.1.0
-**最后更新:** 2026-06-04
-**状态:** Phase 4 完成后，反映当前实现与已规划的中远期扩展
+**版本:** 0.2.0
+**最后更新:** 2026-06-05
+**状态:** Phase 5 完成后，反映当前实现与已规划的中远期扩展
 
 ---
 
@@ -41,17 +41,20 @@ jadepaw-core          ← 零内部依赖，全局基础类型
     ↑
 jadepaw-wasm          ← 只依赖 core，Wasm 运行时集成
     ↑
-jadepaw-bus           ← 依赖 core + wasm（stub）
+jadepaw-db            ← 依赖 core，SQLite 持久化层 (Phase 5)
     ↑          ↑
-    │          ├──── jadepaw-agent  ← 依赖 core + wasm
+    │          ├──── jadepaw-agent  ← 依赖 core + wasm + db
     │          │
-    │          └──── jadepaw-gateway ← 依赖 core + wasm + bus（stub）
-    │                              ↑
-    │                              │
+    │          └──── jadepaw-bus    ← 依赖 core + wasm（stub）
+    │                    ↑
+    │                    │
     └──── jadepaw-skill  ← 依赖 core + wasm + agent（stub）
-                                      ↑
-                                      │
-                                jadepaw-server  ← 依赖全部（binary crate，stub）
+                    ↑          ↑
+                    │          │
+                    │    jadepaw-gateway ← 依赖 core + wasm + bus（stub）
+                    │                    ↑
+                    │                    │
+                    └────────── jadepaw-server  ← 依赖全部（binary crate，stub）
 ```
 
 ### 2.2 Crate 职责与实现状态
@@ -60,8 +63,9 @@ jadepaw-bus           ← 依赖 core + wasm（stub）
 |-------|------|------|------|
 | `jadepaw-core` | library | 共享类型、错误、HostFunctions trait、Tool trait、能力白名单、ReActStep 等 Agent 类型 | **Phase 4 完成** |
 | `jadepaw-wasm` | library | wasmtime Engine、Store、ResourceLimiter链、host函数、实例池、Tool 实现 (HttpRequest, FileRead, FileWrite) | **Phase 4 完成** |
-| `jadepaw-agent` | library | ReAct Agent Loop、LLM 客户端 (async-openai with SSE streaming)、SSE 流式输出、终止守卫、ToolRegistry | **Phase 4 完成** |
-| `jadepaw-bus` | library | Agent/Skill 间消息总线、工作流 DAG | Phase 5+ stub |
+| `jadepaw-agent` | library | ReAct Agent Loop、LLM 客户端 (async-openai with SSE streaming)、SSE 流式输出、终止守卫、Context Window 管理、Session 暂停/恢复、ToolRegistry | **Phase 5 完成** |
+| `jadepaw-db` | library | SessionRepository trait、SqliteSessionRepo、SessionSnapshot/Summary 模型、嵌入式 SQLx migration | **Phase 5 完成** |
+| `jadepaw-bus` | library | Agent/Skill 间消息总线、工作流 DAG | Phase 6+ stub |
 | `jadepaw-skill` | library | SKILL.md 解析、热加载、版本管理 | Phase 6+ stub |
 | `jadepaw-gateway` | library | HTTP/SSE/WS 端点、认证、租户路由 | Phase 7+ stub |
 | `jadepaw-server` | binary | 组装所有 crate，启动 axum 服务 | Phase 7+ stub |
@@ -106,11 +110,12 @@ jadepaw-core/src/
 │   ├── ToolDefinition       MCP 兼容格式 (name, description, inputSchema)
 │   └── extract_host_from_url()  共享的 host 提取工具函数
 │
-├── agent_types.rs          Agent 运行时数据结构（Phase 3）
+├── agent_types.rs          Agent 运行时数据结构（Phase 3，Phase 5 扩展）
 │   ├── AgentRequest         session_id, user_message, context
 │   ├── AgentResponse        session_id, final_answer, trace
 │   ├── ReActStep enum       Thought, Action, Observation, Error, Finished
-│   └── AgentTerminationReason   MaxIterations, WallClockTimeout, WasmTrap, InfrastructureError
+│   ├── AgentTerminationReason   MaxIterations, WallClockTimeout, WasmTrap, InfrastructureError
+│   └── GuardConfig          Phase 5: max_iterations, wall_clock_timeout_ms, model, recent_n (window), resume_from
 │
 ├── guest_exports.rs        Guest 导出接口定义
 │   └── NextAction           ToolChoice, ToolDef
@@ -223,9 +228,9 @@ jadepaw-wasm/src/
 │                                               │
 │  未来可前置插桩 (不改变内层):                   │
 │  ┌──────────────────────────────────────┐    │
-│  │ ToolRateLimiter      (Phase 5+)      │    │
+│  │ ToolRateLimiter      (远期)           │    │
 │  │ ProcessLimiter       (JIT harness)   │    │
-│  │ NetworkLimiter       (Phase 5+)      │    │
+│  │ NetworkLimiter       (远期)           │    │
 │  │ ...                                  │    │
 │  └──────────────┬───────────────────────┘    │
 │                 ↓                            │
@@ -248,7 +253,40 @@ guest 调用 jadepaw.file_read("../../../etc/passwd", buf)
 └───────────────────────────────────────────────┘
 ```
 
-### 3.3 Layer 3: Agent 运行时（jadepaw-agent）— Phase 3/4 完成
+### 3.3 Layer 3: 持久化层（jadepaw-db）— Phase 5 完成
+
+数据库持久化层，为 session 状态提供完整的 CRUD 接口。
+
+```
+jadepaw-db/src/
+├── lib.rs             入口，re-export 公共类型
+├── repository.rs      SessionRepository trait — 持久化契约
+│   ├── save(session_id, tenant_id, snapshot)        → upsert 语义
+│   ├── load(session_id, tenant_id)                  → Option<Snapshot>
+│   ├── list_by_tenant(tenant_id)                    → Vec<Summary> (轻量)
+│   ├── delete(session_id, tenant_id)                → 幂等删除
+│   ├── update_status(session_id, tenant_id, status) → 状态机校验
+│   └── mark_running_as_paused()                     → 崩溃恢复扫描
+│
+├── sqlite_repo.rs     SqliteSessionRepo — SQLite 实现
+│   SQLx 异步查询，:memory: 模式支持零配置集成测试
+│
+├── models.rs           数据模型
+│   ├── SessionStatus     idle → running → paused → ended 状态机
+│   ├── SessionSnapshot   完整 session 快照 (messages_json, trace_json, guard_config_json)
+│   └── SessionSummary    轻量摘要 (不含 blob 列，用于列表查询)
+│
+└── migrations.rs      嵌入式 SQLx migration
+```
+
+**关键设计约束：**
+- 所有方法强制 `session_id` + `tenant_id` 参数，类型系统层面防止跨租户数据泄漏
+- `SessionRepository` trait 遵循 additive-only 策略
+- `list_by_tenant()` 只返回 `SessionSummary`（不含 JSON blob），避免大查询
+- `mark_running_as_paused()` 使用 `RETURNING` 子句，崩溃恢复时原子扫描+标记
+- `update_status()` 在 Rust 层强制状态机转换规则
+
+### 3.4 Layer 4: Agent 运行时（jadepaw-agent）— Phase 3/4/5 完成
 
 ```
 jadepaw-agent/src/
@@ -271,6 +309,13 @@ jadepaw-agent/src/
 ├── guard.rs       终止守卫: 最大迭代次数 (20) + 墙钟超时 (5min)
 │                  tokio::select! 竞争 agent_loop 与 sleep
 │                  LoopErrorKind 结构化错误分类 → AgentTerminationReason
+│                  Phase 5: GuardConfig 扩展 recent_n(preserve_turns)、elapsed_ms(resume 累加)
+│
+├── window.rs       Context Window 管理 (Phase 5)
+│                  count_tokens() — tiktoken-rs BPE 单例 (o200k_base/cl100k_base)
+│                  should_compress() — 65% 自适应阈值 (D-02)
+│                  compress_context() — 保留最近 N=5 turns，旧轮次提取摘要
+│                  aggressive_fallback() — 压缩无效时的降级策略
 │
 ├── tool_registry.rs  ToolRegistry — 集中式 Tool 注册与分发 (Phase 4)
 │                  DashMap<ToolId, Arc<dyn Tool>> 无锁并发
@@ -279,11 +324,12 @@ jadepaw-agent/src/
 │                  http_request domain 白名单在 Registry 层执行 (CR-01)
 │                  返回 ToolId 消除 TOCTOU (WR-02)
 │
-└── lib.rs         入口: run_agent() — 组合 pool, llm_client, tool_registry
+└── lib.rs         入口: run_agent() — 组合 pool, llm_client, tool_registry, session_repo
                    AgentRequest → (AgentResponse, SSE Stream)
+                   Phase 5: resume_session() — 从 DB 快照恢复 + 新建 Wasm Store + 续跑
 ```
 
-#### 3.3.1 ReAct 循环数据流
+#### 3.4.1 ReAct 循环数据流 (Phase 5: token check + persistence)
 
 ```
 用户消息
@@ -295,22 +341,25 @@ build_initial_messages(system_prompt, user_message, context)
 ┌─────────────────────────────────────────────────────┐
 │  for turn in 0..max_iterations(20):                 │
 │    1. Fuel reset (1M per turn)                      │
-│    2. stream_llm_response(messages, close_signal)   │
+│    2. should_compress() → compress if > 65% (Ph5)   │
+│    3. stream_llm_response(messages, close_signal)   │
 │       → 累积 full_response + 检测 channel close      │
-│    3. emit ReActStep::Thought                       │
-│    4. parse_next_action(full_response)              │
+│    4. emit ReActStep::Thought                       │
+│    5. parse_next_action(full_response)              │
 │       ├── LlmDirective::Finish → Finished → 退出    │
 │       ├── LlmDirective::Act(tool, args)             │
 │       │   → ToolRegistry::call_tool() → Observation │
 │       │   → append tool result + assistant msg      │
 │       └── LlmDirective::ContinueThinking → 继续      │
+│    6. Turn-boundary save to SQLite (Ph5)            │
+│       └── checkpoint 失败只记日志，不中断 loop        │
 └─────────────────────────────────────────────────────┘
     │
     ▼
 AgentResponse { session_id, final_answer, trace }
 ```
 
-### 3.4 Layer 4: 消息总线（jadepaw-bus）— Phase 5+ stub
+### 3.5 Layer 5: 消息总线（jadepaw-bus）— Phase 6+ stub
 
 ```
 jadepaw-bus/src/
@@ -319,7 +368,7 @@ jadepaw-bus/src/
 │                  pubsub.rs (跨 Session 事件: 单机 tokio::mpsc / 集群 Redis)
 ```
 
-### 3.5 Layer 5: Skill 系统（jadepaw-skill）— Phase 6+ stub
+### 3.6 Layer 6: Skill 系统（jadepaw-skill）— Phase 6+ stub
 
 ```
 jadepaw-skill/src/
@@ -328,7 +377,7 @@ jadepaw-skill/src/
 │                  loader.rs (热加载), version.rs (Git-based)
 ```
 
-### 3.6 Layer 6: 接入层（jadepaw-gateway）— Phase 7+ stub
+### 3.7 Layer 7: 接入层（jadepaw-gateway）— Phase 7+ stub
 
 ```
 jadepaw-gateway/src/
@@ -337,7 +386,7 @@ jadepaw-gateway/src/
 │                  tenant.rs (租户路由中间件), rate.rs (Rate Limiting)
 ```
 
-### 3.7 Layer 7: 启动入口（jadepaw-server）— Phase 7+ stub
+### 3.8 Layer 8: 启动入口（jadepaw-server）— Phase 7+ stub
 
 ```
 jadepaw-server/src/
@@ -427,9 +476,9 @@ ResourceLimiter chain (委托模式, 可前置插桩)
 
 InstanceHardLimiter ── 不变的安全边界 ──┐
 TenantQuotaLimiter ── 包装 hard ────────┤ 已实现
-ToolRateLimiter ──── 前置插桩 ──────────┤ Phase 5+
+ToolRateLimiter ──── 前置插桩 ──────────┤ 远期
 ProcessLimiter ───── 前置插桩 ──────────┤ 远期 (JIT)
-NetworkLimiter ───── 前置插桩 ──────────┤ Phase 5+
+NetworkLimiter ───── 前置插桩 ──────────┤ 远期
 ...                                      │ 任意扩展
 ```
 
@@ -498,7 +547,7 @@ InstancePool
   │                    Store 销毁, 内存槽位归零回收                           │
 ```
 
-### 6.2 Session 生命周期
+### 6.2 Session 生命周期 (Phase 5: 持久化 + 恢复)
 
 ```
 PoolConfig 创建
@@ -508,16 +557,20 @@ InstancePool::new()
     │ Engine + Module + Linker + Arc<InstancePre>
     │
     ▼
-acquire(session_id, session_state)
-    │ Semaphore 获取槽位 → Store::new → 配置 → 实例化
-    │
-    ▼
+acquire(session_id, session_state)  或  resume_session(session_id, repo)  ← Ph5
+    │ Semaphore 获取槽位                │ 从 DB 加载快照
+    │ Store::new → 配置 → 实例化         │ 创建新 Wasm Store (D-06a)
+    │                                  │ 恢复消息历史 + trace + GuardConfig
+    │                                  │ 继续从下一 turn 执行
+    ▼                                  ▼
 SessionHandle (活跃 session)
     │ Agent Loop 运行 ...
+    │ 每轮完成后 session_repo.save() ← Ph5 turn-boundary persistence
     │ guest 调用 host 函数 → 能力检查 → 路径校验 → I/O
     │
     ▼
 SessionHandle Drop
+    │ session_repo.update_status(Ended) ← Ph5 final status
     │ DashMap 移除 session 记录
     │ Store + Instance + Permit 释放
     │ PoolingAllocator 归零内存槽位
@@ -533,6 +586,7 @@ SessionHandle Drop
 | 异步运行时 | tokio (multi-thread, work-stealing) | 1.52 |
 | Web 框架 | axum (HTTP, WS, SSE) | 0.8 |
 | LLM 客户端 | async-openai (Box<dyn Config>) | 0.40 |
+| Token 计数 | tiktoken-rs (BPE singletons, o200k/cl100k) | 0.12 |
 | HTTP 客户端 | reqwest (SSRF 防御, ConnectionPool) | (async-openai transitive) |
 | 数据库 | SQLx (SQLite 单机, PostgreSQL 集群) | 0.9 |
 | 缓存 | redis-rs (session 状态, pub/sub) | 1.2 |
@@ -553,7 +607,7 @@ Phase 1  ████░░░░░░░░░░░░░░░░░░  项
 Phase 2  ████████████░░░░░░░░░░  Wasm 隔离核心 (架构底盘)     ← 完成
 Phase 3  ████████████████░░░░░░  Agent Loop + LLM + SSE     ← 完成
 Phase 4  ██████████████████░░░░  Tool System + SSRF 防御     ← 完成
-Phase 5  ████████████████████░░  Session 持久化 + Bus 实现
+Phase 5  ████████████████████░░  Session Memory (持久化 + Context Window) ← 完成
 Phase 6  ██████████████████████  Skill 系统 + 热加载
 Phase 7  ██████████████████████  Web Chat UI + Gateway + Server
 Phase 8  ██████████████████████  Skill 管理 UI
@@ -581,6 +635,16 @@ Phase 9  ██████████████████████  可
 - **SessionState.http_client**: 共享 reqwest::Client (CR-01: 避免 per-call 资源泄漏)
 - **is_blocked_ip**: IPv4/IPv6 全覆盖，IPv4-mapped IPv6 检测，CGNAT 屏蔽
 - **resolve_and_check_ssrf_addr**: Host 函数与 Tool 路径共享的 SSRF DNS 检查函数
+
+### 8.3 Phase 5 成果（Session Memory）
+
+- **jadepaw-db crate**: 独立持久化层，SessionRepository trait + SqliteSessionRepo 实现
+- **Context Window 管理**: tiktoken-rs token 计数，65% 自适应阈值压缩，保留最近 N=5 turns
+- **Session 持久化**: 每轮 ReAct 完成后 checkpoint 写入 SQLite，崩溃恢复时 mark_running_as_paused()
+- **resume_session() API**: 从 DB 快照加载会话状态，创建新 Wasm Store，恢复消息历史继续执行
+- **SessionStatus 状态机**: idle → running → paused → ended，Rust 类型层 + DB CHECK 约束双重校验
+- **跨租户隔离**: SessionRepository 所有方法强制 session_id + tenant_id 参数
+- **测试覆盖**: context_window 单元测试 (10) + 集成测试 (8)，session_persistence 集成测试 (7)
 
 ---
 
